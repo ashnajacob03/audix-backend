@@ -64,6 +64,8 @@ router.get('/test-email', async (req, res) => {
 
 
 
+
+
 // Validation middleware
 const validateSignup = [
   body('firstName')
@@ -174,17 +176,45 @@ router.post('/signup', validateSignup, async (req, res) => {
     await user.save();
     console.log('User saved successfully');
 
-    // Simple response without tokens for now
+    // Generate and send OTP for email verification
+    try {
+      const otp = user.generateEmailVerificationOTP();
+      await user.save(); // Save the OTP to database
+      
+      const { sendEmail } = require('../utils/sendEmail');
+      await sendEmail({
+        to: user.email,
+        template: 'otpVerification',
+        data: {
+          name: `${user.firstName} ${user.lastName}`.trim() || user.firstName,
+          otp: otp
+        }
+      });
+      console.log('OTP verification email sent successfully to:', user.email);
+    } catch (emailError) {
+      console.error('Failed to send OTP email:', emailError);
+      // Delete the user if email fails since they can't verify
+      await User.findByIdAndDelete(user._id);
+      return res.status(500).json({
+        success: false,
+        message: 'Failed to send verification email. Please try again.',
+        error: process.env.NODE_ENV === 'development' ? emailError.message : undefined
+      });
+    }
+
+    // Response without tokens - user needs to verify OTP first
     res.status(201).json({
       success: true,
-      message: 'User registered successfully',
+      message: 'Registration successful! Please check your email for the verification code.',
       data: {
         user: {
           id: user._id,
           firstName: user.firstName,
           lastName: user.lastName,
-          email: user.email
-        }
+          email: user.email,
+          isEmailVerified: false
+        },
+        requiresVerification: true
       }
     });
 
@@ -239,6 +269,16 @@ router.post('/login', validateLogin, async (req, res) => {
       return res.status(401).json({
         success: false,
         message: 'Account has been deactivated. Please contact support.'
+      });
+    }
+
+    // Check if email is verified
+    if (!user.isEmailVerified) {
+      return res.status(401).json({
+        success: false,
+        message: 'Please verify your email address before logging in.',
+        requiresVerification: true,
+        email: user.email
       });
     }
 
@@ -336,14 +376,15 @@ router.post('/google', async (req, res) => {
         clerkUser = clerkUsers.length > 0 ? clerkUsers[0] : null;
 
         if (!clerkUser) {
-          // Create user in Clerk
+          // Create user in Clerk (without triggering emails)
           clerkUser = await clerkClient.users.createUser({
             emailAddress: [email.toLowerCase()],
             firstName: user.firstName,
             lastName: user.lastName,
             externalId: user._id.toString(),
             skipPasswordRequirement: true,
-            skipPasswordChecks: true
+            skipPasswordChecks: true,
+            emailAddressVerified: true // Mark as verified to skip verification emails
           });
           console.log('Created user in Clerk for existing MongoDB user:', clerkUser.id);
         }
@@ -379,7 +420,8 @@ router.post('/google', async (req, res) => {
           lastName: user.lastName,
           externalId: user._id.toString(),
           skipPasswordRequirement: true,
-          skipPasswordChecks: true
+          skipPasswordChecks: true,
+          emailAddressVerified: true // Mark as verified to skip verification emails
         });
         console.log('Created user in Clerk for new Google user:', clerkUser.id);
       } catch (clerkError) {
@@ -665,8 +707,162 @@ router.post('/logout', auth, async (req, res) => {
   }
 });
 
+// @route   POST /api/auth/verify-otp
+// @desc    Verify email with OTP
+// @access  Public
+router.post('/verify-otp', async (req, res) => {
+  try {
+    const { email, otp } = req.body;
+
+    if (!email || !otp) {
+      return res.status(400).json({
+        success: false,
+        message: 'Email and OTP are required'
+      });
+    }
+
+    const user = await User.findOne({ email: email.toLowerCase() });
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+
+    if (user.isEmailVerified) {
+      return res.status(400).json({
+        success: false,
+        message: 'Email is already verified'
+      });
+    }
+
+    // Verify OTP
+    if (!user.verifyOTP(otp)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid or expired OTP'
+      });
+    }
+
+    // Mark email as verified and clear OTP
+    user.isEmailVerified = true;
+    user.emailVerificationOTP = undefined;
+    user.emailVerificationOTPExpires = undefined;
+    await user.save();
+
+    // Send welcome email after successful verification
+    try {
+      const { sendEmail } = require('../utils/sendEmail');
+      await sendEmail({
+        to: user.email,
+        template: 'welcomeEmail',
+        data: {
+          name: `${user.firstName} ${user.lastName}`.trim() || user.firstName
+        }
+      });
+      console.log('Welcome email sent successfully to:', user.email);
+    } catch (emailError) {
+      console.error('Failed to send welcome email:', emailError);
+      // Don't fail the verification if welcome email fails
+    }
+
+    res.json({
+      success: true,
+      message: 'Email verified successfully! You can now login with your credentials.',
+      data: {
+        user: {
+          id: user._id,
+          firstName: user.firstName,
+          lastName: user.lastName,
+          name: user.fullName,
+          email: user.email,
+          picture: user.profilePicture,
+          isEmailVerified: user.isEmailVerified,
+          accountType: user.accountType
+        },
+        redirectToLogin: true
+      }
+    });
+
+  } catch (error) {
+    console.error('OTP verification error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error'
+    });
+  }
+});
+
+// @route   POST /api/auth/resend-otp
+// @desc    Resend OTP for email verification
+// @access  Public
+router.post('/resend-otp', async (req, res) => {
+  try {
+    const { email } = req.body;
+
+    if (!email) {
+      return res.status(400).json({
+        success: false,
+        message: 'Email is required'
+      });
+    }
+
+    const user = await User.findOne({ email: email.toLowerCase() });
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+
+    if (user.isEmailVerified) {
+      return res.status(400).json({
+        success: false,
+        message: 'Email is already verified'
+      });
+    }
+
+    // Generate new OTP
+    const otp = user.generateEmailVerificationOTP();
+    await user.save();
+
+    // Send OTP email
+    try {
+      const { sendEmail } = require('../utils/sendEmail');
+      await sendEmail({
+        to: user.email,
+        template: 'otpVerification',
+        data: {
+          name: `${user.firstName} ${user.lastName}`.trim() || user.firstName,
+          otp: otp
+        }
+      });
+      console.log('OTP resent successfully to:', user.email);
+    } catch (emailError) {
+      console.error('Failed to resend OTP email:', emailError);
+      return res.status(500).json({
+        success: false,
+        message: 'Failed to send verification email. Please try again.',
+        error: process.env.NODE_ENV === 'development' ? emailError.message : undefined
+      });
+    }
+
+    res.json({
+      success: true,
+      message: 'Verification code sent successfully! Please check your email.'
+    });
+
+  } catch (error) {
+    console.error('Resend OTP error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error'
+    });
+  }
+});
+
 // @route   GET /api/auth/verify-email/:token
-// @desc    Verify email address
+// @desc    Verify email address (legacy token-based verification)
 // @access  Public
 router.get('/verify-email/:token', async (req, res) => {
   try {

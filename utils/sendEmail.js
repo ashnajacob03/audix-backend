@@ -3,7 +3,7 @@ const nodemailer = require('nodemailer');
 // Email templates
 const emailTemplates = {
   emailVerification: (data) => ({
-    subject: 'Verify Your Email Address - Music App',
+    subject: 'Verify Your Email Address - Audix',
     html: `
       <!DOCTYPE html>
       <html>
@@ -23,11 +23,11 @@ const emailTemplates = {
       <body>
         <div class="container">
           <div class="header">
-            <h1>🎵 Music App</h1>
+            <h1>🎵 Audix</h1>
             <h2>Welcome, ${data.name}!</h2>
           </div>
           <div class="content">
-            <p>Thank you for signing up for Music App! We're excited to have you join our community of music lovers.</p>
+            <p>Thank you for signing up for Audix! We're excited to have you join our community of music lovers.</p>
             <p>To complete your registration and start enjoying unlimited music, please verify your email address by clicking the button below:</p>
             <div style="text-align: center;">
               <a href="${data.verificationUrl}" class="button">Verify Email Address</a>
@@ -35,10 +35,10 @@ const emailTemplates = {
             <p>If the button doesn't work, you can also copy and paste this link into your browser:</p>
             <p style="word-break: break-all; color: #1db954;">${data.verificationUrl}</p>
             <p><strong>This verification link will expire in 24 hours.</strong></p>
-            <p>If you didn't create an account with Music App, please ignore this email.</p>
+            <p>If you didn't create an account with Audix, please ignore this email.</p>
           </div>
           <div class="footer">
-            <p>© 2024 Music App. All rights reserved.</p>
+            <p>© 2024 Audix. All rights reserved.</p>
             <p>This email was sent to verify your account. Please do not reply to this email.</p>
           </div>
         </div>
@@ -53,9 +53,9 @@ const emailTemplates = {
       
       This verification link will expire in 24 hours.
       
-      If you didn't create an account with Music App, please ignore this email.
+      If you didn't create an account with Audix, please ignore this email.
       
-      © 2024 Music App. All rights reserved.
+      © 2024 Audix. All rights reserved.
     `
   }),
 
@@ -81,12 +81,12 @@ const emailTemplates = {
       <body>
         <div class="container">
           <div class="header">
-            <h1>🎵 Music App</h1>
+            <h1>🎵 Audix</h1>
             <h2>Password Reset Request</h2>
           </div>
           <div class="content">
             <p>Hello ${data.name},</p>
-            <p>We received a request to reset your password for your Music App account. If you made this request, click the button below to reset your password:</p>
+            <p>We received a request to reset your password for your Audix account. If you made this request, click the button below to reset your password:</p>
             <div style="text-align: center;">
               <a href="${data.resetUrl}" class="button">Reset Password</a>
             </div>
@@ -103,7 +103,7 @@ const emailTemplates = {
             <p>If you continue to have problems, please contact our support team.</p>
           </div>
           <div class="footer">
-            <p>© 2024 Music App. All rights reserved.</p>
+            <p>© 2024 Audix. All rights reserved.</p>
             <p>This email was sent in response to a password reset request. Please do not reply to this email.</p>
           </div>
         </div>
@@ -111,23 +111,23 @@ const emailTemplates = {
       </html>
     `,
     text: `
-      Password Reset Request - Music App
+      Password Reset Request - Audix
       
       Hello ${data.name},
       
-      We received a request to reset your password for your Music App account. If you made this request, visit this link to reset your password:
+      We received a request to reset your password for your Audix account. If you made this request, visit this link to reset your password:
       ${data.resetUrl}
       
       This password reset link will expire in ${data.expiresIn}.
       
       If you didn't request this password reset, please ignore this email.
       
-      © 2024 Music App. All rights reserved.
+      © 2024 Audix. All rights reserved.
     `
   }),
 
   welcomeEmail: (data) => ({
-    subject: 'Welcome to Music App! 🎵',
+    subject: 'Welcome to Audix! 🎵',
     html: `
       <!DOCTYPE html>
       <html>
@@ -183,18 +183,18 @@ const emailTemplates = {
             <p>Need help getting started? Check out our <a href="${process.env.FRONTEND_URL}/help">Help Center</a> or contact our support team.</p>
             
             <p>Happy listening!</p>
-            <p>The Music App Team</p>
+            <p>The Audix Team</p>
           </div>
           <div class="footer">
-            <p>© 2024 Music App. All rights reserved.</p>
-            <p>You're receiving this email because you created an account with Music App.</p>
+            <p>© 2024 Audix. All rights reserved.</p>
+            <p>You're receiving this email because you created an account with Audix.</p>
           </div>
         </div>
       </body>
       </html>
     `,
     text: `
-      Welcome to Music App, ${data.name}!
+      Welcome to Audix, ${data.name}!
       
       Congratulations! Your email has been verified and your account is now active.
       
@@ -209,9 +209,72 @@ const emailTemplates = {
       Need help? Visit our Help Center: ${process.env.FRONTEND_URL}/help
       
       Happy listening!
-      The Music App Team
+      The Audix Team
       
-      © 2024 Music App. All rights reserved.
+      © 2024 Audix. All rights reserved.
+    `
+  }),
+
+  // OTP Verification Email Template
+  otpVerification: (data) => ({
+    subject: 'Verify Your Email - Audix',
+    html: `
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <style>
+          body { font-family: Arial, sans-serif; background-color: #f4f4f4; margin: 0; padding: 20px; }
+          .container { max-width: 600px; margin: 0 auto; background-color: #ffffff; border-radius: 10px; overflow: hidden; box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1); }
+          .header { background: linear-gradient(135deg, #1db954, #1ed760); color: white; padding: 30px; text-align: center; }
+          .header h1 { margin: 0; font-size: 28px; }
+          .header h2 { margin: 10px 0 0 0; font-size: 18px; font-weight: normal; }
+          .content { padding: 30px; }
+          .otp-code { background-color: #f8f9fa; border: 2px dashed #1db954; border-radius: 10px; padding: 20px; text-align: center; margin: 20px 0; }
+          .otp-code h3 { margin: 0 0 10px 0; color: #1db954; font-size: 24px; }
+          .otp-code .code { font-size: 36px; font-weight: bold; color: #1db954; letter-spacing: 8px; font-family: 'Courier New', monospace; }
+          .footer { background-color: #f8f9fa; padding: 20px; text-align: center; color: #666; font-size: 12px; }
+        </style>
+      </head>
+      <body>
+        <div class="container">
+          <div class="header">
+            <h1>🎵 Audix</h1>
+            <h2>Email Verification</h2>
+          </div>
+          <div class="content">
+            <p>Hello ${data.name},</p>
+            <p>Thank you for signing up for Audix! To complete your registration, please verify your email address using the verification code below:</p>
+            
+            <div class="otp-code">
+              <h3>Your Verification Code</h3>
+              <div class="code">${data.otp}</div>
+            </div>
+            
+            <p><strong>This verification code will expire in 10 minutes.</strong></p>
+            <p>If you didn't create an account with Audix, please ignore this email.</p>
+          </div>
+          <div class="footer">
+            <p>© 2024 Audix. All rights reserved.</p>
+            <p>This email was sent to verify your account. Please do not reply to this email.</p>
+          </div>
+        </div>
+      </body>
+      </html>
+    `,
+    text: `
+      Email Verification - Audix
+      
+      Hello ${data.name},
+      
+      Thank you for signing up for Audix! To complete your registration, please verify your email address using the verification code below:
+      
+      Your Verification Code: ${data.otp}
+      
+      This verification code will expire in 10 minutes.
+      
+      If you didn't create an account with Audix, please ignore this email.
+      
+      © 2024 Audix. All rights reserved.
     `
   })
 };
@@ -244,7 +307,7 @@ const sendEmail = async (options) => {
     }
 
     const mailOptions = {
-      from: `"Music App" <${process.env.EMAIL_FROM || process.env.EMAIL_USER}>`,
+      from: `"Audix" <${process.env.EMAIL_FROM}>`,
       to: options.to,
       subject: options.subject || emailContent.subject,
       text: options.text || emailContent.text,

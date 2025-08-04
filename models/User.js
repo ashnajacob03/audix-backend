@@ -82,6 +82,15 @@ const userSchema = new mongoose.Schema({
     type: Date,
     default: null
   },
+  // OTP Verification
+  emailVerificationOTP: {
+    type: String,
+    default: null
+  },
+  emailVerificationOTPExpires: {
+    type: Date,
+    default: null
+  },
   passwordResetToken: {
     type: String,
     default: null
@@ -338,6 +347,30 @@ userSchema.methods.generateEmailVerificationToken = function() {
   this.emailVerificationExpires = Date.now() + 24 * 60 * 60 * 1000; // 24 hours
   
   return verificationToken;
+};
+
+// Method to generate email verification OTP
+userSchema.methods.generateEmailVerificationOTP = function() {
+  // Generate 6-digit OTP
+  const otp = Math.floor(100000 + Math.random() * 900000).toString();
+  
+  this.emailVerificationOTP = otp;
+  this.emailVerificationOTPExpires = Date.now() + 10 * 60 * 1000; // 10 minutes
+  
+  return otp;
+};
+
+// Method to verify OTP
+userSchema.methods.verifyOTP = function(otp) {
+  if (!this.emailVerificationOTP || !this.emailVerificationOTPExpires) {
+    return false;
+  }
+  
+  if (Date.now() > this.emailVerificationOTPExpires) {
+    return false; // OTP expired
+  }
+  
+  return this.emailVerificationOTP === otp;
 };
 
 // Static method to find user by email or Google ID
