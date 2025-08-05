@@ -5,6 +5,139 @@ const { auth } = require('../middleware/auth');
 
 const router = express.Router();
 
+// @route   GET /api/user/all
+// @desc    Get all users except current user (for friends/follow suggestions)
+// @access  Private
+router.get('/all', auth, async (req, res) => {
+  try {
+    // Get current user to check following status
+    const currentUser = await User.findById(req.user.id).select('following');
+
+    // Get all users except the current user, only return necessary fields
+    const users = await User.find({
+      _id: { $ne: req.user.id },
+      isActive: true
+    })
+    .select('firstName lastName email profilePicture accountType createdAt lastLogin followers')
+    .sort({ createdAt: -1 })
+    .limit(50); // Limit to 50 users for performance
+
+    const formattedUsers = users.map(user => ({
+      id: user._id,
+      firstName: user.firstName,
+      lastName: user.lastName,
+      name: user.fullName,
+      email: user.email,
+      picture: user.profilePicture,
+      accountType: user.accountType,
+      joinedAt: user.createdAt,
+      lastSeen: user.lastLogin,
+      isOnline: user.lastLogin && (Date.now() - new Date(user.lastLogin).getTime()) < 5 * 60 * 1000, // 5 minutes
+      isFollowing: currentUser.following.includes(user._id),
+      followersCount: user.followers.length
+    }));
+
+    res.json({
+      success: true,
+      data: {
+        users: formattedUsers,
+        total: formattedUsers.length
+      }
+    });
+  } catch (error) {
+    console.error('Get all users error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error'
+    });
+  }
+});
+
+// @route   POST /api/user/follow/:userId
+// @desc    Follow a user
+// @access  Private
+router.post('/follow/:userId', auth, async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const currentUserId = req.user.id;
+
+    if (userId === currentUserId) {
+      return res.status(400).json({
+        success: false,
+        message: 'You cannot follow yourself'
+      });
+    }
+
+    // Check if target user exists
+    const targetUser = await User.findById(userId);
+    if (!targetUser) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+
+    // Check if already following
+    const currentUser = await User.findById(currentUserId);
+    if (currentUser.following.includes(userId)) {
+      return res.status(400).json({
+        success: false,
+        message: 'You are already following this user'
+      });
+    }
+
+    // Add to following/followers
+    await User.findByIdAndUpdate(currentUserId, {
+      $addToSet: { following: userId }
+    });
+
+    await User.findByIdAndUpdate(userId, {
+      $addToSet: { followers: currentUserId }
+    });
+
+    res.json({
+      success: true,
+      message: 'User followed successfully'
+    });
+  } catch (error) {
+    console.error('Follow user error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error'
+    });
+  }
+});
+
+// @route   DELETE /api/user/follow/:userId
+// @desc    Unfollow a user
+// @access  Private
+router.delete('/follow/:userId', auth, async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const currentUserId = req.user.id;
+
+    // Remove from following/followers
+    await User.findByIdAndUpdate(currentUserId, {
+      $pull: { following: userId }
+    });
+
+    await User.findByIdAndUpdate(userId, {
+      $pull: { followers: currentUserId }
+    });
+
+    res.json({
+      success: true,
+      message: 'User unfollowed successfully'
+    });
+  } catch (error) {
+    console.error('Unfollow user error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error'
+    });
+  }
+});
+
 // @route   GET /api/user/profile
 // @desc    Get current user profile
 // @access  Private

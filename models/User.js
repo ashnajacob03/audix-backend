@@ -188,6 +188,16 @@ const userSchema = new mongoose.Schema({
     ref: 'Song'
   }],
 
+  // Social Features
+  following: [{
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User'
+  }],
+  followers: [{
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User'
+  }],
+
   // Activity Tracking
   lastLogin: {
     type: Date,
