@@ -3,18 +3,23 @@ const mongoose = require('mongoose');
 const cors = require('cors');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
+const { createServer } = require('http');
+const { Server } = require('socket.io');
+const jwt = require('jsonwebtoken');
 require('dotenv').config();
 
 // Import routes
 const authRoutes = require('./routes/auth');
 const userRoutes = require('./routes/user');
 const notificationRoutes = require('./routes/notifications');
+const messageRoutes = require('./routes/messages');
 
 // Import middleware
 const errorHandler = require('./middleware/errorHandler');
 const logger = require('./middleware/logger');
 
 const app = express();
+const server = createServer(app);
 
 // Security middleware
 app.use(helmet({
@@ -55,6 +60,249 @@ const corsOptions = {
 
 app.use(cors(corsOptions));
 
+// Socket.IO setup
+const io = new Server(server, {
+  cors: corsOptions,
+  transports: ['websocket', 'polling']
+});
+
+// Socket.IO authentication middleware
+io.use(async (socket, next) => {
+  try {
+    console.log('🔐 Socket authentication attempt:', {
+      id: socket.id,
+      handshake: {
+        auth: socket.handshake.auth ? 'present' : 'missing',
+        query: socket.handshake.query,
+        headers: socket.handshake.headers.origin
+      }
+    });
+
+    const token = socket.handshake.auth.token;
+    if (!token) {
+      console.log('❌ No token provided for socket:', socket.id);
+      return next(new Error('Authentication error: No token provided'));
+    }
+
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    const User = require('./models/User');
+    const user = await User.findById(decoded.id);
+    
+    if (!user) {
+      console.log('❌ User not found for token:', decoded.id);
+      return next(new Error('Authentication error: User not found'));
+    }
+
+    socket.userId = user._id.toString();
+    socket.user = user;
+    console.log('✅ Socket authenticated for user:', user.firstName, user.lastName);
+    next();
+  } catch (error) {
+    console.log('❌ Socket authentication error:', error.message);
+    next(new Error('Authentication error: Invalid token'));
+  }
+});
+
+// Socket.IO connection handling
+const connectedUsers = new Map();
+
+io.on('connection', (socket) => {
+  console.log(`User ${socket.user.firstName} connected with socket ID: ${socket.id}`);
+  
+  // Store user connection
+  connectedUsers.set(socket.userId, socket.id);
+  
+  // Join user to their personal room
+  socket.join(`user_${socket.userId}`);
+  
+  // Update user's last active time
+  socket.user.lastActiveAt = new Date();
+  socket.user.save().catch(err => console.error('Error updating user activity:', err));
+  
+  // Broadcast user online status to friends
+  socket.user.friends.forEach(friendId => {
+    socket.to(`user_${friendId}`).emit('user_online', {
+      userId: socket.userId,
+      name: socket.user.fullName,
+      online: true
+    });
+  });
+
+  // Handle typing events
+  socket.on('typing_start', (data) => {
+    socket.to(`user_${data.receiverId}`).emit('user_typing', {
+      userId: socket.userId,
+      name: socket.user.firstName,
+      conversationId: data.conversationId
+    });
+  });
+
+  socket.on('typing_stop', (data) => {
+    socket.to(`user_${data.receiverId}`).emit('user_stop_typing', {
+      userId: socket.userId,
+      conversationId: data.conversationId
+    });
+  });
+
+  // Handle sending messages via socket
+  socket.on('send_message', async (data) => {
+    try {
+      const { receiverId, content, replyToId } = data;
+      const senderId = socket.userId;
+
+      // Check if receiver exists and is a friend
+      const receiver = await User.findById(receiverId);
+      if (!receiver) {
+        socket.emit('message_error', { error: 'Receiver not found' });
+        return;
+      }
+
+      const sender = await User.findById(senderId);
+      if (!sender.friends.includes(receiverId)) {
+        socket.emit('message_error', { error: 'You can only message friends' });
+        return;
+      }
+
+      // Create message
+      const Message = require('./models/Message');
+      const Conversation = require('./models/Conversation');
+      
+      const messageData = {
+        sender: senderId,
+        receiver: receiverId,
+        content,
+        messageType: 'text'
+      };
+
+      if (replyToId) {
+        const replyMessage = await Message.findById(replyToId);
+        if (replyMessage) {
+          messageData.replyTo = replyToId;
+        }
+      }
+
+      const message = await Message.create(messageData);
+      
+      // Populate message for response
+      await message.populate('sender', 'firstName lastName profilePicture');
+      await message.populate('receiver', 'firstName lastName profilePicture');
+      if (message.replyTo) {
+        await message.populate('replyTo', 'content sender createdAt');
+      }
+
+      // Update or create conversation
+      const conversation = await Conversation.findOrCreateConversation([senderId, receiverId]);
+      await conversation.updateLastMessage(message._id);
+      await conversation.incrementUnreadCount(receiverId);
+
+      // Format message for response
+      const formattedMessage = {
+        id: message._id,
+        content: message.content,
+        senderId: message.sender._id,
+        senderName: message.sender.fullName,
+        receiverId: message.receiver._id,
+        receiverName: message.receiver.fullName,
+        timestamp: message.createdAt,
+        isRead: message.isRead,
+        messageType: message.messageType,
+        conversationId: conversation.conversationId,
+        replyTo: message.replyTo ? {
+          id: message.replyTo._id,
+          content: message.replyTo.content,
+          senderName: message.replyTo.sender.fullName,
+          timestamp: message.replyTo.createdAt
+        } : null
+      };
+
+      // Emit to receiver and sender
+      socket.to(`user_${receiverId}`).emit('new_message', formattedMessage);
+      socket.emit('message_sent', formattedMessage);
+
+    } catch (error) {
+      console.error('Socket send message error:', error);
+      socket.emit('message_error', { error: 'Failed to send message' });
+    }
+  });
+
+  // Handle marking messages as read
+  socket.on('mark_messages_read', async (data) => {
+    try {
+      const { userId } = data;
+      const currentUserId = socket.userId;
+
+      const Message = require('./models/Message');
+      const Conversation = require('./models/Conversation');
+
+      // Mark messages as read
+      await Message.markAsRead(userId, currentUserId);
+
+      // Update conversation unread count
+      const conversation = await Conversation.findOrCreateConversation([currentUserId, userId]);
+      await conversation.resetUnreadCount(currentUserId);
+
+      // Emit to sender
+      socket.to(`user_${userId}`).emit('messages_read', {
+        readBy: currentUserId,
+        conversationId: conversation.conversationId
+      });
+
+    } catch (error) {
+      console.error('Socket mark messages read error:', error);
+    }
+  });
+
+  // Handle joining/leaving conversations
+  socket.on('join_conversation', (conversationId) => {
+    socket.join(`conversation_${conversationId}`);
+    console.log(`User ${socket.user.firstName} joined conversation ${conversationId}`);
+  });
+
+  socket.on('leave_conversation', (conversationId) => {
+    socket.leave(`conversation_${conversationId}`);
+    console.log(`User ${socket.user.firstName} left conversation ${conversationId}`);
+  });
+
+  // Handle user status updates
+  socket.on('update_status', (status) => {
+    socket.user.friends.forEach(friendId => {
+      socket.to(`user_${friendId}`).emit('user_status_update', {
+        userId: socket.userId,
+        status: status
+      });
+    });
+  });
+
+  // Handle disconnection
+  socket.on('disconnect', () => {
+    console.log(`User ${socket.user.firstName} disconnected`);
+    
+    // Remove user from connected users
+    connectedUsers.delete(socket.userId);
+    
+    // Update last active time
+    socket.user.lastActiveAt = new Date();
+    socket.user.save();
+    
+    // Broadcast user offline status to friends
+    socket.user.friends.forEach(friendId => {
+      socket.to(`user_${friendId}`).emit('user_offline', {
+        userId: socket.userId,
+        name: socket.user.fullName,
+        online: false,
+        lastSeen: new Date()
+      });
+    });
+  });
+});
+
+// Make io available to routes
+app.use((req, res, next) => {
+  req.io = io;
+  req.connectedUsers = connectedUsers;
+  next();
+});
+
 // Handle preflight requests
 app.options('*', cors(corsOptions));
 
@@ -80,6 +328,7 @@ app.get('/health', (req, res) => {
 app.use('/api/auth', authRoutes);
 app.use('/api/user', userRoutes);
 app.use('/api/notifications', notificationRoutes);
+app.use('/api/messages', messageRoutes);
 
 // 404 handler
 app.use('*', (req, res) => {
@@ -147,11 +396,12 @@ const startServer = async () => {
   try {
     await connectDB();
     
-    app.listen(PORT, () => {
+    server.listen(PORT, () => {
       console.log(`🚀 Server running on port ${PORT}`);
       console.log(`🌍 Environment: ${process.env.NODE_ENV}`);
       console.log(`📊 Health check: http://localhost:${PORT}/health`);
       console.log(`🔗 API Base URL: http://localhost:${PORT}/api`);
+      console.log(`💬 Socket.IO enabled for real-time messaging`);
     });
   } catch (error) {
     console.error('❌ Failed to start server:', error);

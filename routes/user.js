@@ -880,4 +880,48 @@ router.get('/stats', auth, async (req, res) => {
   }
 });
 
+// @route   GET /api/user/friends
+// @desc    Get user's friends list
+// @access  Private
+router.get('/friends', auth, async (req, res) => {
+  try {
+    const user = await User.findById(req.user.id)
+      .populate('friends', 'firstName lastName email profilePicture lastActiveAt')
+      .select('friends');
+    
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+
+    // Format friends data
+    const formattedFriends = user.friends.map(friend => ({
+      id: friend._id,
+      name: friend.fullName,
+      firstName: friend.firstName,
+      lastName: friend.lastName,
+      email: friend.email,
+      avatar: friend.profilePicture || '/default-avatar.png',
+      online: friend.lastActiveAt && (Date.now() - new Date(friend.lastActiveAt).getTime()) < 5 * 60 * 1000, // 5 minutes
+      lastSeen: friend.lastActiveAt || friend.createdAt
+    }));
+
+    res.json({
+      success: true,
+      data: {
+        friends: formattedFriends,
+        count: formattedFriends.length
+      }
+    });
+  } catch (error) {
+    console.error('Get friends error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error'
+    });
+  }
+});
+
 module.exports = router;
