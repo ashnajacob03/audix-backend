@@ -10,8 +10,8 @@ const router = express.Router();
 // @access  Private
 router.get('/all', auth, async (req, res) => {
   try {
-    // Get current user to check following status
-    const currentUser = await User.findById(req.user.id).select('following');
+    // Get current user to check following status and friend requests
+    const currentUser = await User.findById(req.user.id).select('following friends friendRequestsSent friendRequestsReceived');
 
     // Get all users except the current user, only return necessary fields
     const users = await User.find({
@@ -22,20 +22,40 @@ router.get('/all', auth, async (req, res) => {
     .sort({ createdAt: -1 })
     .limit(50); // Limit to 50 users for performance
 
-    const formattedUsers = users.map(user => ({
-      id: user._id,
-      firstName: user.firstName,
-      lastName: user.lastName,
-      name: user.fullName,
-      email: user.email,
-      picture: user.profilePicture,
-      accountType: user.accountType,
-      joinedAt: user.createdAt,
-      lastSeen: user.lastLogin,
-      isOnline: user.lastLogin && (Date.now() - new Date(user.lastLogin).getTime()) < 5 * 60 * 1000, // 5 minutes
-      isFollowing: currentUser.following.includes(user._id),
-      followersCount: user.followers.length
-    }));
+    const formattedUsers = users.map(user => {
+      const userId = user._id.toString();
+      const currentUserId = req.user.id.toString();
+      
+      // Check friend request status
+      const sentRequest = currentUser.friendRequestsSent.find(req => req.user.toString() === userId);
+      const receivedRequest = currentUser.friendRequestsReceived.find(req => req.user.toString() === userId);
+      const isFriend = currentUser.friends.includes(user._id);
+      
+      let friendStatus = 'none';
+      if (isFriend) {
+        friendStatus = 'friends';
+      } else if (sentRequest) {
+        friendStatus = 'request_sent';
+      } else if (receivedRequest) {
+        friendStatus = 'request_received';
+      }
+
+      return {
+        id: user._id,
+        firstName: user.firstName,
+        lastName: user.lastName,
+        name: user.fullName,
+        email: user.email,
+        picture: user.profilePicture,
+        accountType: user.accountType,
+        joinedAt: user.createdAt,
+        lastSeen: user.lastLogin,
+        isOnline: user.lastLogin && (Date.now() - new Date(user.lastLogin).getTime()) < 5 * 60 * 1000, // 5 minutes
+        isFollowing: currentUser.following.includes(user._id),
+        followersCount: user.followers.length,
+        friendStatus: friendStatus
+      };
+    });
 
     res.json({
       success: true,
@@ -54,7 +74,7 @@ router.get('/all', auth, async (req, res) => {
 });
 
 // @route   POST /api/user/follow/:userId
-// @desc    Follow a user
+// @desc    Send follow request to a user
 // @access  Private
 router.post('/follow/:userId', auth, async (req, res) => {
   try {
@@ -77,8 +97,9 @@ router.post('/follow/:userId', auth, async (req, res) => {
       });
     }
 
-    // Check if already following
     const currentUser = await User.findById(currentUserId);
+
+    // Check if already following
     if (currentUser.following.includes(userId)) {
       return res.status(400).json({
         success: false,
@@ -86,21 +107,201 @@ router.post('/follow/:userId', auth, async (req, res) => {
       });
     }
 
-    // Add to following/followers
+    // Check if follow request already sent
+    const existingRequest = currentUser.friendRequestsSent.find(
+      req => req.user.toString() === userId
+    );
+    if (existingRequest) {
+      return res.status(400).json({
+        success: false,
+        message: 'Follow request already sent'
+      });
+    }
+
+    // Check if there's a pending request from the target user
+    const incomingRequest = currentUser.friendRequestsReceived.find(
+      req => req.user.toString() === userId
+    );
+    if (incomingRequest) {
+      return res.status(400).json({
+        success: false,
+        message: 'This user has already sent you a follow request'
+      });
+    }
+
+    // Add follow request to both users
     await User.findByIdAndUpdate(currentUserId, {
-      $addToSet: { following: userId }
+      $addToSet: {
+        friendRequestsSent: {
+          user: userId,
+          sentAt: new Date()
+        }
+      }
     });
 
     await User.findByIdAndUpdate(userId, {
-      $addToSet: { followers: currentUserId }
+      $addToSet: {
+        friendRequestsReceived: {
+          user: currentUserId,
+          receivedAt: new Date()
+        }
+      }
     });
+
+    // Create notification for follow request
+    const Notification = require('../models/Notification');
+    await Notification.createFollowRequest(currentUserId, userId);
 
     res.json({
       success: true,
-      message: 'User followed successfully'
+      message: 'Follow request sent successfully'
     });
   } catch (error) {
-    console.error('Follow user error:', error);
+    console.error('Send follow request error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error'
+    });
+  }
+});
+
+// @route   POST /api/user/follow/:userId/accept
+// @desc    Accept follow request
+// @access  Private
+router.post('/follow/:userId/accept', auth, async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const currentUserId = req.user.id;
+
+    const currentUser = await User.findById(currentUserId);
+    const senderUser = await User.findById(userId);
+
+    if (!senderUser) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+
+    // Check if follow request exists
+    const followRequest = currentUser.friendRequestsReceived.find(
+      req => req.user.toString() === userId
+    );
+
+    if (!followRequest) {
+      return res.status(400).json({
+        success: false,
+        message: 'No follow request found from this user'
+      });
+    }
+
+    // Remove follow requests from both users and add to following/followers
+    await User.findByIdAndUpdate(currentUserId, {
+      $pull: {
+        friendRequestsReceived: { user: userId }
+      }
+    });
+
+    await User.findByIdAndUpdate(userId, {
+      $pull: {
+        friendRequestsSent: { user: currentUserId }
+      },
+      $addToSet: {
+        following: currentUserId
+      }
+    });
+
+    await User.findByIdAndUpdate(currentUserId, {
+      $addToSet: {
+        followers: userId
+      }
+    });
+
+    // Update the original follow request notification
+    const Notification = require('../models/Notification');
+    await Notification.findOneAndUpdate(
+      {
+        sender: userId,
+        recipient: currentUserId,
+        type: 'follow_request',
+        actionTaken: 'pending'
+      },
+      {
+        actionTaken: 'accepted'
+      }
+    );
+
+    // Create acceptance notification for the sender
+    await Notification.createFollowRequestAccepted(currentUserId, userId);
+
+    res.json({
+      success: true,
+      message: 'Follow request accepted successfully'
+    });
+  } catch (error) {
+    console.error('Accept follow request error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error'
+    });
+  }
+});
+
+// @route   POST /api/user/follow/:userId/decline
+// @desc    Decline follow request
+// @access  Private
+router.post('/follow/:userId/decline', auth, async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const currentUserId = req.user.id;
+
+    const currentUser = await User.findById(currentUserId);
+
+    // Check if follow request exists
+    const followRequest = currentUser.friendRequestsReceived.find(
+      req => req.user.toString() === userId
+    );
+
+    if (!followRequest) {
+      return res.status(400).json({
+        success: false,
+        message: 'No follow request found from this user'
+      });
+    }
+
+    // Remove follow requests from both users
+    await User.findByIdAndUpdate(currentUserId, {
+      $pull: {
+        friendRequestsReceived: { user: userId }
+      }
+    });
+
+    await User.findByIdAndUpdate(userId, {
+      $pull: {
+        friendRequestsSent: { user: currentUserId }
+      }
+    });
+
+    // Update the original follow request notification
+    const Notification = require('../models/Notification');
+    await Notification.findOneAndUpdate(
+      {
+        sender: userId,
+        recipient: currentUserId,
+        type: 'follow_request',
+        actionTaken: 'pending'
+      },
+      {
+        actionTaken: 'declined'
+      }
+    );
+
+    res.json({
+      success: true,
+      message: 'Follow request declined successfully'
+    });
+  } catch (error) {
+    console.error('Decline follow request error:', error);
     res.status(500).json({
       success: false,
       message: 'Internal server error'

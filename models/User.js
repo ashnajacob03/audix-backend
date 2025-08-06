@@ -198,6 +198,95 @@ const userSchema = new mongoose.Schema({
     ref: 'User'
   }],
 
+  // Friend Requests
+  sentFriendRequests: [{
+    to: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      required: true
+    },
+    sentAt: {
+      type: Date,
+      default: Date.now
+    },
+    status: {
+      type: String,
+      enum: ['pending', 'accepted', 'rejected'],
+      default: 'pending'
+    }
+  }],
+  receivedFriendRequests: [{
+    from: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      required: true
+    },
+    sentAt: {
+      type: Date,
+      default: Date.now
+    },
+    status: {
+      type: String,
+      enum: ['pending', 'accepted', 'rejected'],
+      default: 'pending'
+    }
+  }],
+
+  // Notifications
+  notifications: [{
+    type: {
+      type: String,
+      enum: ['friend_request', 'friend_accepted', 'friend_rejected', 'follow', 'like', 'comment'],
+      required: true
+    },
+    from: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      required: true
+    },
+    message: {
+      type: String,
+      required: true
+    },
+    read: {
+      type: Boolean,
+      default: false
+    },
+    createdAt: {
+      type: Date,
+      default: Date.now
+    },
+    data: {
+      type: mongoose.Schema.Types.Mixed // For additional data like request ID
+    }
+  }],
+  
+  // Friend Requests
+  friendRequestsSent: [{
+    user: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User'
+    },
+    sentAt: {
+      type: Date,
+      default: Date.now
+    }
+  }],
+  friendRequestsReceived: [{
+    user: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User'
+    },
+    receivedAt: {
+      type: Date,
+      default: Date.now
+    }
+  }],
+  friends: [{
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User'
+  }],
+
   // Activity Tracking
   lastLogin: {
     type: Date,

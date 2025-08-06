@@ -6,7 +6,6 @@ const crypto = require('crypto');
 const User = require('../models/User');
 const { auth } = require('../middleware/auth');
 const { sendEmail } = require('../utils/sendEmail');
-const { clerkClient } = require('@clerk/clerk-sdk-node');
 
 const router = express.Router();
 const googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
@@ -355,7 +354,6 @@ router.post('/google', async (req, res) => {
       ]
     });
 
-    let clerkUser = null;
     let isNewUser = false;
 
     if (user) {
@@ -367,37 +365,12 @@ router.post('/google', async (req, res) => {
         if (!user.profilePicture && picture) user.profilePicture = picture;
         await user.save();
       }
-
-      // Check if user exists in Clerk and create if not
-      try {
-        const clerkUsers = await clerkClient.users.getUserList({
-          emailAddress: [email.toLowerCase()]
-        });
-        clerkUser = clerkUsers.length > 0 ? clerkUsers[0] : null;
-
-        if (!clerkUser) {
-          // Create user in Clerk (without triggering emails)
-          clerkUser = await clerkClient.users.createUser({
-            emailAddress: [email.toLowerCase()],
-            firstName: user.firstName,
-            lastName: user.lastName,
-            externalId: user._id.toString(),
-            skipPasswordRequirement: true,
-            skipPasswordChecks: true,
-            emailAddressVerified: true // Mark as verified to skip verification emails
-          });
-          console.log('Created user in Clerk for existing MongoDB user:', clerkUser.id);
-        }
-      } catch (clerkError) {
-        console.error('Error handling Clerk user for existing user:', clerkError);
-        // Continue without Clerk integration
-      }
     } else {
-      // Create new user in both MongoDB and Clerk
+      // Create new user in MongoDB
       isNewUser = true;
       
       // First create user in MongoDB
-      console.log('Creating new user with Google authentication in MongoDB and Clerk...');
+      console.log('Creating new user with Google authentication in MongoDB...');
       user = new User({
         firstName: firstName || 'User',
         lastName: lastName || '',
@@ -411,23 +384,6 @@ router.post('/google', async (req, res) => {
         isAdmin: email === process.env.ADMIN_EMAIL
       });
       await user.save();
-
-      // Then create user in Clerk
-      try {
-        clerkUser = await clerkClient.users.createUser({
-          emailAddress: [email.toLowerCase()],
-          firstName: user.firstName,
-          lastName: user.lastName,
-          externalId: user._id.toString(),
-          skipPasswordRequirement: true,
-          skipPasswordChecks: true,
-          emailAddressVerified: true // Mark as verified to skip verification emails
-        });
-        console.log('Created user in Clerk for new Google user:', clerkUser.id);
-      } catch (clerkError) {
-        console.error('Error creating Clerk user for Google signup:', clerkError);
-        // Continue without Clerk integration - user is still created in MongoDB
-      }
     }
 
     // Generate tokens
@@ -923,33 +879,11 @@ router.delete('/cleanup-user/:email', async (req, res) => {
     const mongoUser = await User.findOneAndDelete({ email: email.toLowerCase() });
     console.log('MongoDB user deleted:', mongoUser ? 'Yes' : 'No');
 
-    // Step 2: Find and delete user from Clerk
-    let clerkUserDeleted = false;
-    try {
-      // Get all users from Clerk and find by email
-      const clerkUsers = await clerkClient.users.getUserList({
-        emailAddress: [email.toLowerCase()]
-      });
-
-      if (clerkUsers.length > 0) {
-        // Delete each user found (should typically be just one)
-        for (const clerkUser of clerkUsers) {
-          await clerkClient.users.deleteUser(clerkUser.id);
-          console.log(`Deleted Clerk user: ${clerkUser.id}`);
-          clerkUserDeleted = true;
-        }
-      }
-    } catch (clerkError) {
-      console.error('Error deleting from Clerk:', clerkError);
-      // Continue even if Clerk deletion fails
-    }
-
     res.json({
       success: true,
       message: 'User cleanup completed',
       details: {
         mongoUserDeleted: !!mongoUser,
-        clerkUserDeleted,
         email: email
       }
     });
