@@ -18,7 +18,7 @@ router.get('/all', auth, async (req, res) => {
       _id: { $ne: req.user.id },
       isActive: true
     })
-    .select('firstName lastName email profilePicture accountType createdAt lastLogin followers')
+    .select('firstName lastName email profilePicture accountType createdAt lastLogin followers friends')
     .sort({ createdAt: -1 })
     .limit(50); // Limit to 50 users for performance
 
@@ -29,7 +29,25 @@ router.get('/all', auth, async (req, res) => {
       // Check friend request status
       const sentRequest = currentUser.friendRequestsSent.find(req => req.user.toString() === userId);
       const receivedRequest = currentUser.friendRequestsReceived.find(req => req.user.toString() === userId);
-      const isFriend = currentUser.friends.includes(user._id);
+      // Check both users' friends arrays
+      const currentUserHasFriend = currentUser.friends.includes(user._id);
+      const targetUserHasFriend = user.friends.includes(currentUser._id);
+      const isFriend = currentUserHasFriend && targetUserHasFriend;
+      
+      // Debug logging for specific user
+      if (user.firstName === 'Alka' && user.lastName === 'Sony') {
+        console.log('Friend status debug for Alka Sony:', {
+          currentUserId: currentUserId,
+          targetUserId: userId,
+          currentUserHasFriend,
+          targetUserHasFriend,
+          isFriend,
+          sentRequest: !!sentRequest,
+          receivedRequest: !!receivedRequest,
+          currentUserFriends: currentUser.friends.map(id => id.toString()),
+          targetUserFriends: user.friends.map(id => id.toString())
+        });
+      }
       
       let friendStatus = 'none';
       if (isFriend) {
@@ -81,7 +99,20 @@ router.post('/follow/:userId', auth, async (req, res) => {
     const { userId } = req.params;
     const currentUserId = req.user.id;
 
-    if (userId === currentUserId) {
+    console.log('Follow request:', { userId, currentUserId, userIdType: typeof userId, currentUserIdType: typeof currentUserId });
+
+    // Validate MongoDB ObjectId format
+    const mongoose = require('mongoose');
+    if (!mongoose.Types.ObjectId.isValid(userId)) {
+      console.log('Error: Invalid user ID format:', userId);
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid user ID format'
+      });
+    }
+
+    if (userId === currentUserId.toString()) {
+      console.log('Error: User trying to follow themselves');
       return res.status(400).json({
         success: false,
         message: 'You cannot follow yourself'
@@ -91,6 +122,7 @@ router.post('/follow/:userId', auth, async (req, res) => {
     // Check if target user exists
     const targetUser = await User.findById(userId);
     if (!targetUser) {
+      console.log('Error: Target user not found:', userId);
       return res.status(404).json({
         success: false,
         message: 'User not found'
@@ -98,9 +130,12 @@ router.post('/follow/:userId', auth, async (req, res) => {
     }
 
     const currentUser = await User.findById(currentUserId);
+    console.log('Current user following:', currentUser.following.map(id => id.toString()));
+    console.log('Target user ID:', userId);
 
     // Check if already following
     if (currentUser.following.includes(userId)) {
+      console.log('Error: Already following this user');
       return res.status(400).json({
         success: false,
         message: 'You are already following this user'
@@ -112,6 +147,7 @@ router.post('/follow/:userId', auth, async (req, res) => {
       req => req.user.toString() === userId
     );
     if (existingRequest) {
+      console.log('Error: Follow request already sent');
       return res.status(400).json({
         success: false,
         message: 'Follow request already sent'
@@ -123,6 +159,7 @@ router.post('/follow/:userId', auth, async (req, res) => {
       req => req.user.toString() === userId
     );
     if (incomingRequest) {
+      console.log('Error: Incoming request already exists');
       return res.status(400).json({
         success: false,
         message: 'This user has already sent you a follow request'
@@ -158,9 +195,11 @@ router.post('/follow/:userId', auth, async (req, res) => {
     });
   } catch (error) {
     console.error('Send follow request error:', error);
+    console.error('Error stack:', error.stack);
     res.status(500).json({
       success: false,
-      message: 'Internal server error'
+      message: 'Internal server error',
+      ...(process.env.NODE_ENV === 'development' && { error: error.message })
     });
   }
 });
@@ -195,10 +234,14 @@ router.post('/follow/:userId/accept', auth, async (req, res) => {
       });
     }
 
-    // Remove follow requests from both users and add to following/followers
+    // Remove follow requests from both users and add to friends/following/followers
     await User.findByIdAndUpdate(currentUserId, {
       $pull: {
         friendRequestsReceived: { user: userId }
+      },
+      $addToSet: {
+        friends: userId,
+        followers: userId
       }
     });
 
@@ -207,13 +250,8 @@ router.post('/follow/:userId/accept', auth, async (req, res) => {
         friendRequestsSent: { user: currentUserId }
       },
       $addToSet: {
+        friends: currentUserId,
         following: currentUserId
-      }
-    });
-
-    await User.findByIdAndUpdate(currentUserId, {
-      $addToSet: {
-        followers: userId
       }
     });
 
@@ -317,13 +355,19 @@ router.delete('/follow/:userId', auth, async (req, res) => {
     const { userId } = req.params;
     const currentUserId = req.user.id;
 
-    // Remove from following/followers
+    // Remove from friends/following/followers
     await User.findByIdAndUpdate(currentUserId, {
-      $pull: { following: userId }
+      $pull: { 
+        following: userId,
+        friends: userId
+      }
     });
 
     await User.findByIdAndUpdate(userId, {
-      $pull: { followers: currentUserId }
+      $pull: { 
+        followers: currentUserId,
+        friends: currentUserId
+      }
     });
 
     res.json({
@@ -336,6 +380,81 @@ router.delete('/follow/:userId', auth, async (req, res) => {
       success: false,
       message: 'Internal server error'
     });
+  }
+});
+
+// @route   POST /api/user/fix-relationships
+// @desc    Fix existing relationships (temporary endpoint)
+// @access  Private
+router.post('/fix-relationships', auth, async (req, res) => {
+  try {
+    const currentUserId = req.user.id;
+    const currentUser = await User.findById(currentUserId).select('following followers friendRequestsSent friendRequestsReceived friends');
+    
+    // Find users who are in following/followers but not in friends
+    const followingUsers = await User.find({ _id: { $in: currentUser.following } });
+    const followerUsers = await User.find({ _id: { $in: currentUser.followers } });
+    
+    let fixed = 0;
+    
+    // Check mutual following relationships and add to friends
+    for (const followingUser of followingUsers) {
+      if (followingUser.followers.includes(currentUserId)) {
+        // Mutual relationship exists, add to friends
+        await User.findByIdAndUpdate(currentUserId, {
+          $addToSet: { friends: followingUser._id }
+        });
+        await User.findByIdAndUpdate(followingUser._id, {
+          $addToSet: { friends: currentUserId }
+        });
+        fixed++;
+      }
+    }
+    
+    res.json({
+      success: true,
+      message: `Fixed ${fixed} relationships`,
+      data: {
+        following: currentUser.following.length,
+        followers: currentUser.followers.length,
+        friends: currentUser.friends.length,
+        fixed
+      }
+    });
+  } catch (error) {
+    console.error('Fix relationships error:', error);
+    res.status(500).json({ success: false, message: 'Fix failed' });
+  }
+});
+
+// @route   GET /api/user/debug/:userId
+// @desc    Debug user relationship status
+// @access  Private
+router.get('/debug/:userId', auth, async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const currentUserId = req.user.id;
+    
+    const currentUser = await User.findById(currentUserId).select('following friendRequestsSent friendRequestsReceived friends');
+    const targetUser = await User.findById(userId).select('_id firstName lastName');
+    
+    res.json({
+      success: true,
+      data: {
+        currentUserId,
+        targetUserId: userId,
+        targetUserExists: !!targetUser,
+        targetUserName: targetUser ? `${targetUser.firstName} ${targetUser.lastName}` : null,
+        isFollowing: currentUser.following.includes(userId),
+        sentRequest: currentUser.friendRequestsSent.find(req => req.user.toString() === userId),
+        receivedRequest: currentUser.friendRequestsReceived.find(req => req.user.toString() === userId),
+        isFriend: currentUser.friends.includes(userId),
+        isSameUser: userId === currentUserId.toString()
+      }
+    });
+  } catch (error) {
+    console.error('Debug error:', error);
+    res.status(500).json({ success: false, message: 'Debug failed' });
   }
 });
 
