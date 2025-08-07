@@ -906,7 +906,7 @@ const validationConfig = {
     ],
   },
   password: {
-    minLength: 10,
+    minLength: 8,
     maxLength: 128,
     requireLower: true,
     requireUpper: true,
