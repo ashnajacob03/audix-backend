@@ -273,14 +273,14 @@ router.post('/login', validateLogin, async (req, res) => {
     }
 
     // Check if email is verified
-    if (!user.isEmailVerified) {
-      return res.status(401).json({
-        success: false,
-        message: 'Please verify your email address before logging in.',
-        requiresVerification: true,
-        email: user.email
-      });
-    }
+    // if (!user.isEmailVerified) {
+    //   return res.status(401).json({
+    //     success: false,
+    //     message: 'Please verify your email address before logging in.',
+    //     requiresVerification: true,
+    //     email: user.email
+    //   });
+    // }
 
     // Check password
     const isPasswordValid = await user.comparePassword(password);
@@ -923,6 +923,55 @@ router.delete('/cleanup-user/:email', async (req, res) => {
       error: process.env.NODE_ENV === 'development' ? error.message : undefined
     });
   }
+});
+
+// Dynamic validation config endpoint
+const validationConfig = {
+  name: {
+    minLength: 3,
+    maxLength: 30,
+    allowedPattern: "^[a-zA-Z\s\-']+$",
+    noNumbers: true,
+    noConsecutiveSpecial: true,
+  },
+  email: {
+    blockDisposable: true,
+    disposableDomains: [
+      'mailinator.com', '10minutemail.com', 'guerrillamail.com', 'tempmail.com', 'yopmail.com', 'trashmail.com'
+    ],
+  },
+  password: {
+    minLength: 10,
+    maxLength: 128,
+    requireLower: true,
+    requireUpper: true,
+    requireNumber: true,
+    requireSpecial: true,
+    blockCommon: true,
+  },
+};
+
+// @route   GET /api/config/validation
+// @desc    Get dynamic validation config for registration
+// @access  Public
+router.get('/config/validation', (req, res) => {
+  res.json({ success: true, data: validationConfig });
+});
+
+// @route   GET /api/auth/check-email
+// @desc    Check if email is already registered
+// @access  Public
+router.get('/check-email', async (req, res) => {
+  const { email } = req.query;
+  if (!email || typeof email !== 'string') {
+    return res.status(400).json({ success: false, message: 'Email is required' });
+  }
+  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  if (!emailRegex.test(email)) {
+    return res.status(400).json({ success: false, message: 'Invalid email format' });
+  }
+  const user = await User.findOne({ email: email.toLowerCase() });
+  res.json({ exists: !!user });
 });
 
 module.exports = router;
