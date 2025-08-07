@@ -259,7 +259,8 @@ router.post('/login', validateLogin, async (req, res) => {
     if (!user) {
       return res.status(401).json({
         success: false,
-        message: 'Invalid email or password'
+        message: 'No account found with this email address. Please check your email or sign up for a new account.',
+        code: 'USER_NOT_FOUND'
       });
     }
 
@@ -286,7 +287,8 @@ router.post('/login', validateLogin, async (req, res) => {
     if (!isPasswordValid) {
       return res.status(401).json({
         success: false,
-        message: 'Invalid email or password'
+        message: 'The password you entered is incorrect. Please try again or reset your password.',
+        code: 'INVALID_PASSWORD'
       });
     }
 
@@ -310,7 +312,7 @@ router.post('/login', validateLogin, async (req, res) => {
           given_name: user.firstName,
           family_name: user.lastName,
           email: user.email,
-          picture: user.profilePicture,
+          picture: user.picture, // Use virtual field
           isEmailVerified: user.isEmailVerified,
           accountType: user.accountType,
           lastLogin: user.lastLogin
@@ -335,9 +337,32 @@ router.post('/login', validateLogin, async (req, res) => {
 // @route   POST /api/auth/google
 // @desc    Google OAuth login/signup
 // @access  Public
+// Helper function to process Google profile image URL
+const processGoogleProfileImage = (imageUrl) => {
+  if (!imageUrl) return null;
+  
+  try {
+    // If it's a Google profile image URL, ensure it has proper size parameter
+    if (imageUrl.includes('googleusercontent.com')) {
+      // Remove existing size parameters and add our own
+      const baseUrl = imageUrl.split('=')[0];
+      return `${baseUrl}=s400-c`; // s400 = 400px, c = crop to square
+    }
+    
+    // For other URLs, return as-is
+    return imageUrl;
+  } catch (error) {
+    console.error('Error processing image URL:', error);
+    return imageUrl;
+  }
+};
+
 router.post('/google', async (req, res) => {
   try {
     const { email, firstName, lastName, picture, googleId } = req.body;
+    
+    // Process the Google profile image URL
+    const processedPicture = processGoogleProfileImage(picture);
 
     if (!email) {
       return res.status(400).json({
@@ -362,7 +387,7 @@ router.post('/google', async (req, res) => {
         user.googleId = googleId;
         user.isEmailVerified = true;
         user.authMethod = 'google'; // Update auth method to google
-        if (!user.profilePicture && picture) user.profilePicture = picture;
+        if (!user.profilePicture && processedPicture) user.profilePicture = processedPicture;
         await user.save();
       }
     } else {
@@ -371,12 +396,14 @@ router.post('/google', async (req, res) => {
       
       // First create user in MongoDB
       console.log('Creating new user with Google authentication in MongoDB...');
+      console.log('Original picture URL:', picture);
+      console.log('Processed picture URL:', processedPicture);
       user = new User({
         firstName: firstName || 'User',
         lastName: lastName || '',
         email,
         googleId,
-        profilePicture: picture,
+        profilePicture: processedPicture,
         isEmailVerified: true,
         authMethod: 'google',
         termsAcceptedAt: new Date(),
@@ -403,7 +430,7 @@ router.post('/google', async (req, res) => {
           lastName: user.lastName,
           name: user.fullName,
           email: user.email,
-          picture: user.profilePicture,
+          picture: user.picture, // Use virtual field
           isEmailVerified: user.isEmailVerified,
           accountType: user.accountType,
           lastLogin: user.lastLogin
@@ -732,7 +759,7 @@ router.post('/verify-otp', async (req, res) => {
           lastName: user.lastName,
           name: user.fullName,
           email: user.email,
-          picture: user.profilePicture,
+          picture: user.picture, // Use virtual field
           isEmailVerified: user.isEmailVerified,
           accountType: user.accountType
         },

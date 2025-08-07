@@ -20,6 +20,14 @@ const logger = require('./middleware/logger');
 
 const app = express();
 const server = createServer(app);
+app.use((req, res, next) => {
+  res.setHeader(
+    "Content-Security-Policy",
+    "script-src 'self' https://accounts.google.com https://apis.google.com 'unsafe-inline' 'unsafe-eval';"
+  );
+  next();
+});
+
 
 // Security middleware
 app.use(helmet({

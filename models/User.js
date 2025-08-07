@@ -362,6 +362,15 @@ userSchema.virtual('family_name').get(function() {
 
 // Virtual for picture (for compatibility with Google users)
 userSchema.virtual('picture').get(function() {
+  if (!this.profilePicture) return null;
+  
+  // Process Google profile image URLs to ensure they work properly
+  if (this.profilePicture.includes('googleusercontent.com')) {
+    // Remove existing size parameters and add our own
+    const baseUrl = this.profilePicture.split('=')[0];
+    return `${baseUrl}=s400-c`; // s400 = 400px, c = crop to square
+  }
+  
   return this.profilePicture;
 });
 
