@@ -88,7 +88,7 @@ const validateSignup = [
   
   body('password')
     .isLength({ min: 8 })
-    .withMessage('Password must be at least 8 characters long')
+    .withMessage('Password must be at least 8 characters long'),
 ];
 
 const validateLogin = [
@@ -118,11 +118,14 @@ const validateResetPassword = [
     .isLength({ min: 8 })
     .withMessage('Password must be at least 8 characters long')
     .matches(/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)/)
-    .withMessage('Password must contain at least one uppercase letter, one lowercase letter, and one number')
+    .withMessage('Password must contain at least one uppercase letter, one lowercase letter, and one number'),
 ];
 
+// Temporary in-memory store for pending signups (for demo; use Redis for production)
+const pendingSignups = {};
+
 // @route   POST /api/auth/signup
-// @desc    Register a new user
+// @desc    Register a new user (OTP step only, do not save user yet)
 // @access  Public
 router.post('/signup', validateSignup, async (req, res) => {
   console.log('=== SIGNUP ROUTE HIT ===');
@@ -137,11 +140,7 @@ router.post('/signup', validateSignup, async (req, res) => {
       });
     }
 
-    console.log('Signup request received:', req.body);
-
     const { firstName, lastName, email, password, gender, agreeToTerms } = req.body;
-    console.log('Creating user with:', { firstName, lastName, email, gender, agreeToTerms });
-
     // Check if user already exists in MongoDB
     const existingMongoUser = await User.findOne({ email: email.toLowerCase() });
     if (existingMongoUser) {
@@ -151,49 +150,35 @@ router.post('/signup', validateSignup, async (req, res) => {
       });
     }
 
-    console.log('Creating new user with regular authentication...');
-    // Create new user with minimal fields (MongoDB only)
-    const userData = {
+    // Generate OTP
+    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    // Store signup data and OTP in memory (for demo; use Redis for production)
+    pendingSignups[email.toLowerCase()] = {
       firstName,
       lastName,
       email,
       password,
-      authMethod: 'regular',
-      termsAcceptedAt: new Date(),
-      privacyPolicyAcceptedAt: new Date(),
-      isAdmin: email === process.env.ADMIN_EMAIL
+      gender,
+      agreeToTerms,
+      otp,
+      otpExpires: Date.now() + 10 * 60 * 1000 // 10 minutes
     };
 
-    // Only add gender if it's provided
-    if (gender) {
-      userData.gender = gender;
-    }
-
-    const user = new User(userData);
-
-    console.log('Saving user...');
-    await user.save();
-    console.log('User saved successfully');
-
-    // Generate and send OTP for email verification
+    // Send OTP email
     try {
-      const otp = user.generateEmailVerificationOTP();
-      await user.save(); // Save the OTP to database
-      
       const { sendEmail } = require('../utils/sendEmail');
       await sendEmail({
-        to: user.email,
+        to: email,
         template: 'otpVerification',
         data: {
-          name: `${user.firstName} ${user.lastName}`.trim() || user.firstName,
+          name: `${firstName} ${lastName}`.trim() || firstName,
           otp: otp
         }
       });
-      console.log('OTP verification email sent successfully to:', user.email);
+      console.log('OTP verification email sent successfully to:', email);
     } catch (emailError) {
       console.error('Failed to send OTP email:', emailError);
-      // Delete the user if email fails since they can't verify
-      await User.findByIdAndDelete(user._id);
+      delete pendingSignups[email.toLowerCase()];
       return res.status(500).json({
         success: false,
         message: 'Failed to send verification email. Please try again.',
@@ -201,38 +186,24 @@ router.post('/signup', validateSignup, async (req, res) => {
       });
     }
 
-    // Response without tokens - user needs to verify OTP first
     res.status(201).json({
       success: true,
-      message: 'Registration successful! Please check your email for the verification code.',
+      message: 'Registration step 1 successful! Please check your email for the verification code.',
       data: {
         user: {
-          id: user._id,
-          firstName: user.firstName,
-          lastName: user.lastName,
-          email: user.email,
+          firstName,
+          lastName,
+          email,
           isEmailVerified: false
         },
         requiresVerification: true
       }
     });
-
   } catch (error) {
     console.error('Signup error:', error);
-    console.error('Error stack:', error.stack);
-
-    // Handle MongoDB duplicate key error
-    if (error.code === 11000) {
-      return res.status(409).json({
-        success: false,
-        message: 'This email address is already registered. Please sign in instead or use a different email address.'
-      });
-    }
-
     res.status(500).json({
       success: false,
-      message: 'Internal server error during registration',
-      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+      message: 'Internal server error'
     });
   }
 });
@@ -691,49 +662,47 @@ router.post('/logout', auth, async (req, res) => {
 });
 
 // @route   POST /api/auth/verify-otp
-// @desc    Verify email with OTP
+// @desc    Verify email with OTP and create user in DB
 // @access  Public
 router.post('/verify-otp', async (req, res) => {
   try {
     const { email, otp } = req.body;
-
     if (!email || !otp) {
       return res.status(400).json({
         success: false,
         message: 'Email and OTP are required'
       });
     }
-
-    const user = await User.findOne({ email: email.toLowerCase() });
-    if (!user) {
+    const pending = pendingSignups[email.toLowerCase()];
+    if (!pending) {
       return res.status(404).json({
         success: false,
-        message: 'User not found'
+        message: 'No pending signup found for this email.'
       });
     }
-
-    if (user.isEmailVerified) {
-      return res.status(400).json({
-        success: false,
-        message: 'Email is already verified'
-      });
-    }
-
-    // Verify OTP
-    if (!user.verifyOTP(otp)) {
+    if (pending.otp !== otp || Date.now() > pending.otpExpires) {
       return res.status(400).json({
         success: false,
         message: 'Invalid or expired OTP'
       });
     }
-
-    // Mark email as verified and clear OTP
+    // Create user in DB
+    const userData = {
+      firstName: pending.firstName,
+      lastName: pending.lastName,
+      email: pending.email,
+      password: pending.password,
+      authMethod: 'regular',
+      termsAcceptedAt: new Date(),
+      privacyPolicyAcceptedAt: new Date(),
+      isAdmin: pending.email === process.env.ADMIN_EMAIL,
+      gender: pending.gender
+    };
+    const user = new User(userData);
     user.isEmailVerified = true;
-    user.emailVerificationOTP = undefined;
-    user.emailVerificationOTPExpires = undefined;
     await user.save();
-
-    // Send welcome email after successful verification
+    delete pendingSignups[email.toLowerCase()];
+    // Send welcome email (optional)
     try {
       const { sendEmail } = require('../utils/sendEmail');
       await sendEmail({
@@ -743,15 +712,12 @@ router.post('/verify-otp', async (req, res) => {
           name: `${user.firstName} ${user.lastName}`.trim() || user.firstName
         }
       });
-      console.log('Welcome email sent successfully to:', user.email);
     } catch (emailError) {
       console.error('Failed to send welcome email:', emailError);
-      // Don't fail the verification if welcome email fails
     }
-
     res.json({
       success: true,
-      message: 'Email verified successfully! You can now login with your credentials.',
+      message: 'Email verified and account created successfully! You can now login with your credentials.',
       data: {
         user: {
           id: user._id,
@@ -759,14 +725,13 @@ router.post('/verify-otp', async (req, res) => {
           lastName: user.lastName,
           name: user.fullName,
           email: user.email,
-          picture: user.picture, // Use virtual field
+          picture: user.picture,
           isEmailVerified: user.isEmailVerified,
           accountType: user.accountType
         },
         redirectToLogin: true
       }
     });
-
   } catch (error) {
     console.error('OTP verification error:', error);
     res.status(500).json({
