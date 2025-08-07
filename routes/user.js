@@ -886,7 +886,7 @@ router.get('/stats', auth, async (req, res) => {
 router.get('/friends', auth, async (req, res) => {
   try {
     const user = await User.findById(req.user.id)
-      .populate('friends', 'firstName lastName email profilePicture lastActiveAt')
+      .populate('friends', 'firstName lastName email profilePicture lastActiveAt authMethod googleId')
       .select('friends');
     
     if (!user) {
@@ -903,7 +903,9 @@ router.get('/friends', auth, async (req, res) => {
       firstName: friend.firstName,
       lastName: friend.lastName,
       email: friend.email,
-      avatar: friend.profilePicture || '/default-avatar.png',
+      avatar: friend.profilePicture, // Don't set default here, let frontend handle it
+      authMethod: friend.authMethod,
+      isGoogleUser: friend.authMethod === 'google',
       online: friend.lastActiveAt && (Date.now() - new Date(friend.lastActiveAt).getTime()) < 5 * 60 * 1000, // 5 minutes
       lastSeen: friend.lastActiveAt || friend.createdAt
     }));
