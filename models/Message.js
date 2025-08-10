@@ -80,6 +80,14 @@ messageSchema.virtual('conversationId').get(function() {
   return participants.join('_');
 });
 
+// Virtual for sender's full name
+messageSchema.virtual('senderFullName').get(function() {
+  if (this.sender && this.sender.firstName && this.sender.lastName) {
+    return `${this.sender.firstName} ${this.sender.lastName}`;
+  }
+  return this.sender ? this.sender.fullName : 'Unknown';
+});
+
 // Static method to get conversation between two users
 messageSchema.statics.getConversation = function(userId1, userId2, page = 1, limit = 50) {
   return this.find({

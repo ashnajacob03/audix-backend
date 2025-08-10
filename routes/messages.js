@@ -7,20 +7,139 @@ const User = require('../models/User');
 
 const router = express.Router();
 
-// Get user conversations
-router.get('/conversations', auth, async (req, res) => {
+  // Get user conversations
+  router.get('/conversations', auth, async (req, res) => {
   try {
     const { page = 1, limit = 20 } = req.query;
     const userId = req.user.id;
 
-    const conversations = await Conversation.getUserConversations(userId, parseInt(page), parseInt(limit));
+    // Fetch ALL conversations for the user (without pagination) to ensure we can backfill all historical data
+    let conversations = await Conversation.find({
+      participants: userId,
+      isActive: true
+    })
+    .populate('participants', 'firstName lastName profilePicture lastActiveAt')
+    .populate({
+      path: 'lastMessage',
+      populate: {
+        path: 'sender',
+        select: 'firstName lastName'
+      }
+    })
+    .sort({ lastMessageAt: -1, updatedAt: -1 });
+
+    // Ensure historical conversations are represented and lastMessage is populated
+    // 1) Backfill lastMessage for existing conversations that are missing it
+    console.log('🔍 Starting backfill process. Found', conversations.length, 'conversations');
+    conversations = await Promise.all(conversations.map(async (conv) => {
+      try {
+        if (!conv.lastMessage && Array.isArray(conv.participants)) {
+          const other = conv.participants.find(p => p._id.toString() !== userId);
+          if (other) {
+            console.log('🔍 Backfilling conversation with', other.fullName, 'for user', userId);
+            const lastMsg = await Message.getLastMessage(userId, other._id);
+            if (lastMsg) {
+              console.log('🔍 Found historical message:', lastMsg.content, 'from', lastMsg.createdAt);
+              // Persist last message and timestamp from history
+              conv.lastMessage = lastMsg._id;
+              conv.lastMessageAt = lastMsg.createdAt;
+              await conv.save();
+              // Re-populate lastMessage with sender details for formatting below
+              await conv.populate({
+                path: 'lastMessage',
+                populate: { path: 'sender', select: 'firstName lastName' }
+              });
+              console.log('🔍 Successfully backfilled conversation', conv._id);
+            } else {
+              console.log('🔍 No historical messages found for conversation with', other.fullName);
+            }
+          }
+        } else if (conv.lastMessage) {
+          console.log('🔍 Conversation already has lastMessage:', conv.lastMessage.content);
+        }
+      } catch (e) {
+        console.warn('Backfill lastMessage failed for conversation', conv._id?.toString?.(), e?.message);
+      }
+      return conv;
+    }));
+
+    // 2) Create conversations for friends that have historical messages but no conversation doc yet
+    try {
+      const currentUser = await User.findById(userId).select('friends firstName lastName');
+      const friendIds = (currentUser?.friends || []).map(id => id.toString());
+      console.log('🔍 User has friends:', friendIds);
+      
+      const existingOtherIds = new Set(
+        conversations
+          .map(c => (c.participants || []).find(p => p._id.toString() !== userId))
+          .filter(Boolean)
+          .map(p => p._id.toString())
+      );
+      console.log('🔍 Existing conversation participants:', Array.from(existingOtherIds));
+
+      const newlyCreatedConversations = await Promise.all(friendIds.map(async (friendId) => {
+        if (existingOtherIds.has(friendId)) {
+          console.log('🔍 Friend', friendId, 'already has conversation, skipping');
+          return null;
+        }
+        try {
+          console.log('🔍 Checking for historical messages with friend', friendId);
+          const lastMsg = await Message.getLastMessage(userId, friendId);
+          if (!lastMsg) {
+            console.log('🔍 No historical messages found for friend', friendId);
+            return null; // no historical messages
+          }
+
+          console.log('🔍 Found historical message with friend', friendId, ':', lastMsg.content);
+          // Create or fetch the conversation and persist historical last message
+          let conv = await Conversation.findOrCreateConversation([userId, friendId]);
+          // Only set values if missing to avoid overwriting newer state
+          if (!conv.lastMessage) {
+            conv.lastMessage = lastMsg._id;
+            conv.lastMessageAt = lastMsg.createdAt;
+            await conv.save();
+            console.log('🔍 Created conversation with historical lastMessage for friend', friendId);
+          }
+          // Populate for consistent formatting
+          conv = await conv.populate('participants', 'firstName lastName profilePicture lastActiveAt');
+          await conv.populate({
+            path: 'lastMessage',
+            populate: { path: 'sender', select: 'firstName lastName' }
+          });
+          return conv;
+        } catch (e) {
+          console.warn('Failed ensuring conversation for friend', friendId, e?.message);
+          return null;
+        }
+      }));
+
+      const validNewConversations = newlyCreatedConversations.filter(Boolean);
+      console.log('🔍 Created', validNewConversations.length, 'new conversations from historical messages');
+      
+      conversations = conversations.concat(validNewConversations);
+      // Sort again after potential backfill/creation
+      conversations.sort((a, b) => new Date(b.lastMessageAt || b.updatedAt) - new Date(a.lastMessageAt || a.updatedAt));
+    } catch (e) {
+      console.warn('Backfill ensure conversations step failed:', e?.message);
+    }
+    
+    console.log('🔍 Backend raw conversations from DB:', JSON.stringify(conversations.map(conv => ({
+      id: conv._id,
+      participants: conv.participants.map(p => ({ id: p._id, name: p.fullName })),
+      lastMessage: conv.lastMessage ? {
+        id: conv.lastMessage._id,
+        content: conv.lastMessage.content,
+        sender: conv.lastMessage.sender ? conv.lastMessage.sender.fullName : 'Unknown'
+      } : null,
+      lastMessageAt: conv.lastMessageAt
+    })), null, 2));
     
     // Format conversations for frontend
     const formattedConversations = conversations.map(conv => {
       const otherParticipant = conv.participants.find(p => p._id.toString() !== userId);
       const unreadCount = conv.unreadCount.get(userId) || 0;
       
-      return {
+      const formatted = {
         id: conv._id,
         conversationId: conv.conversationId,
         participant: {
@@ -35,15 +154,37 @@ router.get('/conversations', auth, async (req, res) => {
         lastMessage: conv.lastMessage ? {
           id: conv.lastMessage._id,
           content: conv.lastMessage.content,
-          sender: conv.lastMessage.sender.fullName,
-          senderId: conv.lastMessage.sender._id,
+          sender: conv.lastMessage.sender ? conv.lastMessage.sender.fullName : 'Unknown',
+          senderId: conv.lastMessage.sender ? conv.lastMessage.sender._id.toString() : null,
           timestamp: conv.lastMessage.createdAt,
           isRead: conv.lastMessage.isRead
         } : null,
         unreadCount,
-        lastMessageAt: conv.lastMessageAt,
+        lastMessageAt: conv.lastMessageAt ? conv.lastMessageAt.toISOString() : null,
         updatedAt: conv.updatedAt
       };
+      
+      console.log('🔍 Backend formatted conversation:', {
+        id: formatted.id,
+        participant: formatted.participant.name,
+        lastMessage: formatted.lastMessage,
+        lastMessageAt: formatted.lastMessageAt
+      });
+      
+      return formatted;
+    });
+
+    console.log('🔍 Backend sending formatted conversations:', JSON.stringify(formattedConversations.map(conv => ({
+      id: conv.id,
+      participant: conv.participant.name,
+      lastMessage: conv.lastMessage,
+      lastMessageAt: conv.lastMessageAt
+    })), null, 2));
+    
+    // Final summary of what we're sending
+    console.log('🔍 FINAL SUMMARY: Sending', formattedConversations.length, 'conversations');
+    formattedConversations.forEach((conv, index) => {
+      console.log(`  ${index + 1}. ${conv.participant.name}: ${conv.lastMessage ? `"${conv.lastMessage.content}" (${conv.lastMessageAt})` : 'No last message'}`);
     });
 
     res.json({

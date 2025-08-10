@@ -347,6 +347,68 @@ router.post('/follow/:userId/decline', auth, async (req, res) => {
   }
 });
 
+// @route   POST /api/user/follow/:userId/cancel
+// @desc    Cancel follow request
+// @access  Private
+router.post('/follow/:userId/cancel', auth, async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const currentUserId = req.user.id;
+
+    const currentUser = await User.findById(currentUserId);
+
+    // Check if follow request exists
+    const followRequest = currentUser.friendRequestsSent.find(
+      req => req.user.toString() === userId
+    );
+
+    if (!followRequest) {
+      return res.status(400).json({
+        success: false,
+        message: 'No follow request found for this user'
+      });
+    }
+
+    // Remove follow requests from both users
+    await User.findByIdAndUpdate(currentUserId, {
+      $pull: {
+        friendRequestsSent: { user: userId }
+      }
+    });
+
+    await User.findByIdAndUpdate(userId, {
+      $pull: {
+        friendRequestsReceived: { user: currentUserId }
+      }
+    });
+
+    // Update the original follow request notification
+    const Notification = require('../models/Notification');
+    await Notification.findOneAndUpdate(
+      {
+        sender: currentUserId,
+        recipient: userId,
+        type: 'follow_request',
+        actionTaken: 'pending'
+      },
+      {
+        actionTaken: 'cancelled'
+      }
+    );
+
+    res.json({
+      success: true,
+      message: 'Follow request cancelled successfully'
+    });
+  } catch (error) {
+    console.error('Cancel follow request error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error'
+    });
+  }
+});
+
 // @route   DELETE /api/user/follow/:userId
 // @desc    Unfollow a user
 // @access  Private

@@ -57,7 +57,7 @@ conversationSchema.index({ 'participants': 1, 'lastMessageAt': -1 });
 // Virtual for conversation ID (sorted participants for consistency)
 conversationSchema.virtual('conversationId').get(function() {
   if (this.conversationType === 'direct' && this.participants.length === 2) {
-    const participantIds = this.participants.map(p => p.toString()).sort();
+    const participantIds = this.participants.map(p => p._id ? p._id.toString() : p.toString()).sort();
     return participantIds.join('_');
   }
   return this._id.toString();
