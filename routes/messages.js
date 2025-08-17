@@ -486,8 +486,16 @@ router.delete('/:messageId', [
   param('messageId').isMongoId().withMessage('Invalid message ID')
 ], async (req, res) => {
   try {
+    console.log('🗑️ Delete message request received:', {
+      messageId: req.params.messageId,
+      userId: req.user.id,
+      method: req.method,
+      url: req.url
+    });
+
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
+      console.log('❌ Validation errors:', errors.array());
       return res.status(400).json({
         success: false,
         message: 'Validation failed',
@@ -498,40 +506,75 @@ router.delete('/:messageId', [
     const { messageId } = req.params;
     const userId = req.user.id;
 
+    console.log('🔍 Looking for message:', messageId);
     const message = await Message.findById(messageId);
+    
     if (!message) {
+      console.log('❌ Message not found:', messageId);
       return res.status(404).json({
         success: false,
         message: 'Message not found'
       });
     }
 
+    console.log('✅ Message found:', {
+      id: message._id,
+      sender: message.sender,
+      senderString: message.sender.toString(),
+      receiver: message.receiver,
+      content: message.content.substring(0, 50) + '...'
+    });
+
+    console.log('🔍 Authorization check:', {
+      messageSenderId: message.sender.toString(),
+      requestUserId: userId,
+      senderType: typeof message.sender.toString(),
+      userIdType: typeof userId,
+      areEqual: message.sender.toString() === userId
+    });
+
     // Check if user is the sender
     if (message.sender.toString() !== userId) {
+      console.log('❌ User not authorized to delete message:', {
+        messageSender: message.sender.toString(),
+        requestUserId: userId
+      });
       return res.status(403).json({
         success: false,
         message: 'You can only delete your own messages'
       });
     }
 
+    console.log('✅ User authorized, proceeding with soft delete');
+
     // Soft delete
     message.isDeleted = true;
     message.deletedAt = new Date();
     await message.save();
 
+    console.log('✅ Message soft deleted in database');
+
     // Emit socket event
     const conversationId = [message.sender.toString(), message.receiver.toString()].sort().join('_');
+    console.log('📡 Emitting socket event for message deletion:', {
+      messageId,
+      conversationId,
+      receiver: message.receiver.toString()
+    });
+    
     req.io.to(`user_${message.receiver}`).emit('message_deleted', {
       messageId,
       conversationId
     });
+
+    console.log('✅ Message deletion completed successfully');
 
     res.json({
       success: true,
       message: 'Message deleted successfully'
     });
   } catch (error) {
-    console.error('Delete message error:', error);
+    console.error('❌ Delete message error:', error);
     res.status(500).json({
       success: false,
       message: 'Failed to delete message',

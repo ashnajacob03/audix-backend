@@ -13,6 +13,8 @@ const authRoutes = require('./routes/auth');
 const userRoutes = require('./routes/user');
 const notificationRoutes = require('./routes/notifications');
 const messageRoutes = require('./routes/messages');
+const adminRoutes = require('./routes/admin');
+const musicRoutes = require('./routes/music');
 
 // Import middleware
 const errorHandler = require('./middleware/errorHandler');
@@ -346,6 +348,8 @@ app.use('/api/auth', authRoutes);
 app.use('/api/user', userRoutes);
 app.use('/api/notifications', notificationRoutes);
 app.use('/api/messages', messageRoutes);
+app.use('/api/admin', adminRoutes);
+app.use('/api/music', musicRoutes);
 
 // 404 handler
 app.use('*', (req, res) => {
