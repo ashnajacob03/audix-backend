@@ -518,9 +518,18 @@ router.post('/forgot-password', validateForgotPassword, async (req, res) => {
 // @access  Public
 router.post('/reset-password', validateResetPassword, async (req, res) => {
   try {
+    console.log('🔄 Reset password request received:', { 
+      body: req.body,
+      hasToken: !!req.body.token,
+      hasPassword: !!req.body.password,
+      tokenLength: req.body.token?.length,
+      passwordLength: req.body.password?.length
+    });
+
     // Check for validation errors
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
+      console.log('❌ Validation errors:', errors.array());
       return res.status(400).json({
         success: false,
         message: 'Validation failed',
@@ -532,6 +541,11 @@ router.post('/reset-password', validateResetPassword, async (req, res) => {
 
     // Hash the token to compare with stored hash
     const hashedToken = crypto.createHash('sha256').update(token).digest('hex');
+    console.log('🔑 Token processing:', {
+      originalToken: token,
+      hashedToken: hashedToken,
+      tokenLength: token?.length
+    });
 
     const user = await User.findOne({
       passwordResetToken: hashedToken,
@@ -539,17 +553,33 @@ router.post('/reset-password', validateResetPassword, async (req, res) => {
     });
 
     if (!user) {
+      console.log('❌ User not found with reset token');
       return res.status(400).json({
         success: false,
         message: 'Invalid or expired reset token'
       });
     }
 
+    console.log('✅ User found:', {
+      userId: user._id,
+      email: user.email,
+      hasPasswordResetToken: !!user.passwordResetToken,
+      tokenExpires: user.passwordResetExpires
+    });
+
     // Set new password
+    console.log('🔐 Setting new password for user');
     user.password = password;
     user.passwordResetToken = undefined;
     user.passwordResetExpires = undefined;
-    await user.save();
+    
+    try {
+      await user.save();
+      console.log('✅ User saved successfully with new password');
+    } catch (saveError) {
+      console.error('❌ Error saving user:', saveError);
+      throw saveError;
+    }
 
     // Generate new tokens
     const authToken = user.generateAuthToken();

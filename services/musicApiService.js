@@ -4,13 +4,10 @@ const Song = require('../models/Song');
 class MusicApiService {
   constructor() {
     this.spotifyBaseUrl = 'https://api.spotify.com/v1';
-    this.lastfmBaseUrl = 'http://ws.audioscrobbler.com/2.0';
-    this.deezerBaseUrl = 'https://api.deezer.com';
     
-    // You'll need to set these environment variables
+    // Spotify credentials
     this.spotifyClientId = process.env.SPOTIFY_CLIENT_ID;
     this.spotifyClientSecret = process.env.SPOTIFY_CLIENT_SECRET;
-    this.lastfmApiKey = process.env.LASTFM_API_KEY;
     
     this.spotifyAccessToken = null;
     this.spotifyTokenExpiry = null;
@@ -44,7 +41,7 @@ class MusicApiService {
     }
   }
 
-  async searchSpotify(query, type = 'track', limit = 20) {
+  async searchSpotify(query, type = 'track', limit = 20, market = 'US') {
     try {
       const token = await this.getSpotifyAccessToken();
       const response = await axios.get(`${this.spotifyBaseUrl}/search`, {
@@ -54,7 +51,8 @@ class MusicApiService {
         params: {
           q: query,
           type,
-          limit
+          limit,
+          market
         }
       });
 
@@ -119,125 +117,70 @@ class MusicApiService {
     }
   }
 
-  // ===== LAST.FM API METHODS =====
+  // ===== ENHANCED SPOTIFY SEARCH FOR GLOBAL COVERAGE =====
 
-  async searchLastfm(query, limit = 20) {
+  async searchSpotifyGlobal(query, limit = 20) {
     try {
-      const response = await axios.get(this.lastfmBaseUrl, {
-        params: {
-          method: 'track.search',
-          track: query,
-          api_key: this.lastfmApiKey,
-          format: 'json',
-          limit
+      // Search multiple markets for better global coverage
+      const markets = ['US', 'JP', 'KR', 'IN', 'BR', 'MX', 'FR', 'DE', 'GB', 'AU'];
+      const allResults = [];
+      
+      // Search primary market first
+      const primaryResults = await this.searchSpotify(query, 'track', limit, 'US');
+      if (primaryResults.tracks?.items) {
+        allResults.push(...primaryResults.tracks.items);
+      }
+
+      // Search additional markets for regional content
+      for (const market of markets.slice(1, 4)) { // Limit to 3 additional markets
+        try {
+          const marketResults = await this.searchSpotify(query, 'track', Math.floor(limit / 2), market);
+          if (marketResults.tracks?.items) {
+            allResults.push(...marketResults.tracks.items);
+          }
+        } catch (error) {
+          console.error(`Market search failed for ${market}:`, error);
         }
-      });
+      }
 
-      return response.data.results;
+      // Remove duplicates and limit results
+      const uniqueResults = this.removeDuplicateTracks(allResults);
+      return { tracks: { items: uniqueResults.slice(0, limit) } };
     } catch (error) {
-      console.error('Error searching Last.fm:', error);
-      throw new Error('Failed to search Last.fm');
+      console.error('Error in global Spotify search:', error);
+      throw new Error('Failed to search Spotify globally');
     }
   }
 
-  async getLastfmTrackInfo(artist, track) {
-    try {
-      const response = await axios.get(this.lastfmBaseUrl, {
-        params: {
-          method: 'track.getInfo',
-          artist,
-          track,
-          api_key: this.lastfmApiKey,
-          format: 'json'
-        }
-      });
+  // ===== UNIFIED SEARCH METHODS (SPOTIFY ONLY) =====
 
-      return response.data.track;
-    } catch (error) {
-      console.error('Error getting Last.fm track info:', error);
-      return null;
-    }
-  }
-
-  async getLastfmSimilarTracks(artist, track, limit = 20) {
-    try {
-      const response = await axios.get(this.lastfmBaseUrl, {
-        params: {
-          method: 'track.getSimilar',
-          artist,
-          track,
-          api_key: this.lastfmApiKey,
-          format: 'json',
-          limit
-        }
-      });
-
-      return response.data.similartracks;
-    } catch (error) {
-      console.error('Error getting Last.fm similar tracks:', error);
-      return null;
-    }
-  }
-
-  // ===== DEEZER API METHODS =====
-
-  async searchDeezer(query, limit = 20) {
-    try {
-      const response = await axios.get(`${this.deezerBaseUrl}/search`, {
-        params: {
-          q: query,
-          limit
-        }
-      });
-
-      return response.data;
-    } catch (error) {
-      console.error('Error searching Deezer:', error);
-      throw new Error('Failed to search Deezer');
-    }
-  }
-
-  async getDeezerTrack(trackId) {
-    try {
-      const response = await axios.get(`${this.deezerBaseUrl}/track/${trackId}`);
-      return response.data;
-    } catch (error) {
-      console.error('Error getting Deezer track:', error);
-      throw new Error('Failed to get track from Deezer');
-    }
-  }
-
-  // ===== UNIFIED SEARCH METHODS =====
-
-  async searchAll(query, limit = 20) {
+  async searchAll(query, limit = 20, includeRegional = true) {
     const results = {
       spotify: [],
       lastfm: [],
-      deezer: []
+      deezer: [],
+      itunes: [],
+      youtube: []
     };
 
     try {
-      // Search Spotify
-      const spotifyResults = await this.searchSpotify(query, 'track', limit);
-      results.spotify = spotifyResults.tracks?.items || [];
-    } catch (error) {
-      console.error('Spotify search failed:', error);
-    }
+      if (includeRegional) {
+        // Use enhanced global search
+        const globalResults = await this.searchSpotifyGlobal(query, limit);
+        results.spotify = globalResults.tracks?.items || [];
+      } else {
+        // Use single market search
+        const spotifyResults = await this.searchSpotify(query, 'track', limit, 'US');
+        results.spotify = spotifyResults.tracks?.items || [];
+      }
 
-    try {
-      // Search Last.fm
-      const lastfmResults = await this.searchLastfm(query, limit);
-      results.lastfm = lastfmResults.trackmatches?.track || [];
+      // Return empty arrays for other sources since we're Spotify-only
+      results.lastfm = [];
+      results.deezer = [];
+      results.itunes = [];
+      results.youtube = [];
     } catch (error) {
-      console.error('Last.fm search failed:', error);
-    }
-
-    try {
-      // Search Deezer
-      const deezerResults = await this.searchDeezer(query, limit);
-      results.deezer = deezerResults.data || [];
-    } catch (error) {
-      console.error('Deezer search failed:', error);
+      console.error('Error in Spotify search:', error);
     }
 
     return results;
@@ -302,84 +245,16 @@ class MusicApiService {
     }
   }
 
-  async importLastfmTrack(lastfmTrack) {
-    try {
-      // Check if song already exists
-      let song = await Song.findOne({ 
-        title: lastfmTrack.name,
-        artist: lastfmTrack.artist
-      });
-      
-      if (song) {
-        return song;
-      }
+  // ===== UTILITY METHODS =====
 
-      // Get detailed track info
-      const trackInfo = await this.getLastfmTrackInfo(lastfmTrack.artist, lastfmTrack.name);
-
-      // Create new song
-      song = new Song({
-        lastfmId: lastfmTrack.mbid || lastfmTrack.url,
-        title: lastfmTrack.name,
-        artist: lastfmTrack.artist,
-        album: trackInfo?.album?.title,
-        duration: trackInfo?.duration ? Math.round(trackInfo.duration) : null,
-        imageUrl: lastfmTrack.image?.[2]?.['#text'] || trackInfo?.album?.image?.[2]?.['#text'],
-        largeImageUrl: lastfmTrack.image?.[3]?.['#text'] || trackInfo?.album?.image?.[3]?.['#text'],
-        genres: trackInfo?.toptags?.tag?.map(tag => tag.name) || [],
-        tags: lastfmTrack.tags?.tag?.map(tag => tag.name) || [],
-        externalUrls: {
-          lastfm: lastfmTrack.url
-        },
-        source: 'lastfm',
-        playCount: parseInt(lastfmTrack.listeners) || 0
-      });
-
-      await song.save();
-      return song;
-    } catch (error) {
-      console.error('Error importing Last.fm track:', error);
-      throw new Error('Failed to import track from Last.fm');
-    }
-  }
-
-  async importDeezerTrack(deezerTrack) {
-    try {
-      // Check if song already exists
-      let song = await Song.findOne({ deezerId: deezerTrack.id.toString() });
-      
-      if (song) {
-        return song;
-      }
-
-      // Create new song
-      song = new Song({
-        deezerId: deezerTrack.id.toString(),
-        title: deezerTrack.title,
-        artist: deezerTrack.artist?.name || 'Unknown Artist',
-        album: deezerTrack.album?.title,
-        albumArtist: deezerTrack.album?.artist?.name,
-        duration: deezerTrack.duration,
-        trackNumber: deezerTrack.track_position,
-        discNumber: deezerTrack.disk_number,
-        previewUrl: deezerTrack.preview,
-        imageUrl: deezerTrack.album?.cover,
-        largeImageUrl: deezerTrack.album?.cover_big,
-        popularity: deezerTrack.rank,
-        releaseDate: deezerTrack.release_date,
-        releaseYear: new Date(deezerTrack.release_date).getFullYear(),
-        externalUrls: {
-          deezer: deezerTrack.link
-        },
-        source: 'deezer'
-      });
-
-      await song.save();
-      return song;
-    } catch (error) {
-      console.error('Error importing Deezer track:', error);
-      throw new Error('Failed to import track from Deezer');
-    }
+  removeDuplicateTracks(tracks) {
+    const seen = new Set();
+    return tracks.filter(track => {
+      const key = `${track.name}-${track.artists[0]?.name}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
   }
 
   // ===== RECOMMENDATION METHODS =====

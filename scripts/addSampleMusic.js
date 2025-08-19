@@ -237,8 +237,29 @@ async function addSampleMusic() {
     const songs = await Song.insertMany(sampleSongs);
     console.log(`Added ${songs.length} sample songs`);
 
-    // Add sample playlists
-    const playlists = await Playlist.insertMany(samplePlaylists);
+    // Create a system user for playlists (or use existing user)
+    const User = require('../models/User');
+    let systemUser = await User.findOne({ email: 'system@audix.com' });
+    
+    if (!systemUser) {
+      systemUser = new User({
+        firstName: 'System',
+        lastName: 'User',
+        email: 'system@audix.com',
+        username: 'system',
+        password: 'system123', // This won't be used for login
+        isVerified: true
+      });
+      await systemUser.save();
+    }
+
+    // Add sample playlists with owner
+    const playlistsWithOwner = samplePlaylists.map(playlist => ({
+      ...playlist,
+      owner: systemUser._id
+    }));
+    
+    const playlists = await Playlist.insertMany(playlistsWithOwner);
     console.log(`Added ${playlists.length} sample playlists`);
 
     // Add some songs to playlists

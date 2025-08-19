@@ -1,7 +1,8 @@
 const express = require('express');
 const router = express.Router();
+const axios = require('axios');
 const { body, validationResult, query } = require('express-validator');
-const auth = require('../middleware/auth');
+const { auth } = require('../middleware/auth');
 const Song = require('../models/Song');
 const Playlist = require('../models/Playlist');
 const User = require('../models/User');
@@ -82,12 +83,138 @@ router.get('/songs/:id', async (req, res) => {
   }
 });
 
+// Stream song audio
+router.get('/songs/:id/stream', async (req, res) => {
+  try {
+    const song = await Song.findById(req.params.id);
+    if (!song) {
+      return res.status(404).json({ message: 'Song not found' });
+    }
+
+    // If a direct audio URL exists on the document, use that first
+    // Note: audioUrl may not be part of the schema for Spotify imports,
+    // but if present on manual entries, we can still access it via toObject()
+    const songObj = song.toObject({ getters: false, virtuals: false });
+    const directAudioUrl = songObj.audioUrl || songObj.streamUrl;
+
+    // If a full audio URL is available, proxy it with Range support
+    if (directAudioUrl && typeof directAudioUrl === 'string') {
+      // Forward range header if present
+      const range = req.headers.range;
+      const headers = {
+        ...(range ? { Range: range } : {}),
+        // Some hosts require a UA
+        'User-Agent': req.headers['user-agent'] || 'Audix/1.0',
+        // Allow cross-origin fetches of audio
+        'Accept': '*/*'
+      };
+
+      const upstream = await axios.get(directAudioUrl, {
+        responseType: 'stream',
+        headers,
+        validateStatus: (status) => status >= 200 && status < 400
+      });
+
+      // Mirror status and critical headers for media playback
+      res.status(upstream.status);
+      const passthroughHeaders = [
+        'content-type',
+        'content-length',
+        'accept-ranges',
+        'content-range',
+        'cache-control',
+      ];
+      passthroughHeaders.forEach((h) => {
+        const v = upstream.headers[h];
+        if (v) res.setHeader(h, v);
+      });
+
+      upstream.data.pipe(res);
+      return;
+    }
+
+    // Try external resolver API for a full track URL if configured
+    const resolverUrl = process.env.FULL_TRACK_RESOLVER_URL;
+    if (resolverUrl) {
+      try {
+        const params = {
+          title: song.title,
+          artist: song.artist,
+          album: song.album,
+          spotifyId: song.spotifyId,
+        };
+        const headers = {};
+        if (process.env.FULL_TRACK_RESOLVER_TOKEN) {
+          headers['Authorization'] = `Bearer ${process.env.FULL_TRACK_RESOLVER_TOKEN}`;
+        }
+        const resolveResp = await axios.get(resolverUrl, { params, headers });
+        const resolvedAudio = resolveResp?.data?.audioUrl || resolveResp?.data?.streamUrl;
+        if (resolvedAudio) {
+          const range = req.headers.range;
+          const proxyHeaders = {
+            ...(range ? { Range: range } : {}),
+            'User-Agent': req.headers['user-agent'] || 'Audix/1.0',
+            'Accept': '*/*'
+          };
+          const upstream = await axios.get(resolvedAudio, {
+            responseType: 'stream',
+            headers: proxyHeaders,
+            validateStatus: (status) => status >= 200 && status < 400
+          });
+
+          res.status(upstream.status);
+          const passthroughHeaders = [
+            'content-type',
+            'content-length',
+            'accept-ranges',
+            'content-range',
+            'cache-control',
+          ];
+          passthroughHeaders.forEach((h) => {
+            const v = upstream.headers[h];
+            if (v) res.setHeader(h, v);
+          });
+
+          upstream.data.pipe(res);
+          return;
+        }
+      } catch (resolverErr) {
+        console.error('Full track resolver failed:', resolverErr.message);
+      }
+    }
+
+    // Fallback to Spotify 30s preview if available
+    if (song.previewUrl) {
+      return res.redirect(song.previewUrl);
+    }
+
+    // Last-resort fallback: try iTunes Search API for a preview clip
+    try {
+      const term = `${song.title} ${song.artist}`;
+      const response = await axios.get('https://itunes.apple.com/search', {
+        params: { term, entity: 'song', limit: 1 }
+      });
+      const itunesPreview = response?.data?.results?.[0]?.previewUrl;
+      if (itunesPreview) {
+        return res.redirect(itunesPreview);
+      }
+    } catch (itunesError) {
+      console.error('iTunes fallback failed:', itunesError.message);
+    }
+
+    return res.status(404).json({ message: 'No stream available for this song' });
+  } catch (error) {
+    console.error('Error streaming song:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
 // Search songs with external API integration
 router.get('/search', [
   query('q').notEmpty().withMessage('Search query is required'),
-  query('type').optional().isIn(['song', 'artist', 'album', 'playlist']).withMessage('Invalid search type'),
+  query('type').optional().isIn(['song', 'artist', 'album', 'playlist', 'all']).withMessage('Invalid search type'),
   query('limit').optional().isInt({ min: 1, max: 50 }).withMessage('Limit must be between 1 and 50'),
-  query('source').optional().isIn(['local', 'spotify', 'lastfm', 'deezer', 'all']).withMessage('Invalid source')
+  query('source').optional().isIn(['local', 'spotify', 'all']).withMessage('Invalid source')
 ], async (req, res) => {
   try {
     const errors = validationResult(req);
@@ -114,12 +241,12 @@ router.get('/search', [
     // Search external APIs if requested
     if (source !== 'local') {
       try {
-        const externalResults = await musicApiService.searchAll(query, parseInt(limit));
+        const externalResults = await musicApiService.searchAll(query, parseInt(limit), true); // Enable regional search
         
-        // Import and merge results
+        // Import Spotify tracks only
         if (externalResults.spotify.length > 0) {
           const importedSongs = [];
-          for (const track of externalResults.spotify.slice(0, 5)) { // Limit to 5 to avoid rate limits
+          for (const track of externalResults.spotify.slice(0, 10)) { // Increased limit for better coverage
             try {
               const song = await musicApiService.importSpotifyTrack(track);
               importedSongs.push(song);
@@ -127,36 +254,13 @@ router.get('/search', [
               console.error('Error importing Spotify track:', error);
             }
           }
+          
+          // Merge imported songs
           results.songs = [...results.songs, ...importedSongs];
         }
-
-        if (externalResults.lastfm.length > 0) {
-          const importedSongs = [];
-          for (const track of externalResults.lastfm.slice(0, 5)) {
-            try {
-              const song = await musicApiService.importLastfmTrack(track);
-              importedSongs.push(song);
-            } catch (error) {
-              console.error('Error importing Last.fm track:', error);
-            }
-          }
-          results.songs = [...results.songs, ...importedSongs];
-        }
-
-        if (externalResults.deezer.length > 0) {
-          const importedSongs = [];
-          for (const track of externalResults.deezer.slice(0, 5)) {
-            try {
-              const song = await musicApiService.importDeezerTrack(track);
-              importedSongs.push(song);
-            } catch (error) {
-              console.error('Error importing Deezer track:', error);
-            }
-          }
-          results.songs = [...results.songs, ...importedSongs];
-        }
+        
       } catch (error) {
-        console.error('External API search failed:', error);
+        console.error('Spotify API search failed:', error);
       }
     }
 

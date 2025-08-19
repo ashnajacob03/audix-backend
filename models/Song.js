@@ -1,18 +1,8 @@
 const mongoose = require('mongoose');
 
 const songSchema = new mongoose.Schema({
-  // External API identifiers
+  // Spotify API identifier
   spotifyId: {
-    type: String,
-    unique: true,
-    sparse: true
-  },
-  deezerId: {
-    type: String,
-    unique: true,
-    sparse: true
-  },
-  lastfmId: {
     type: String,
     unique: true,
     sparse: true
@@ -52,11 +42,14 @@ const songSchema = new mongoose.Schema({
   },
 
   // Media URLs
+  audioUrl: {
+    type: String // Direct full-length audio URL if available
+  },
+  streamUrl: {
+    type: String // Alternate stream URL if available
+  },
   previewUrl: {
     type: String // 30-second preview URL from Spotify
-  },
-  audioUrl: {
-    type: String // Full audio URL (if available)
   },
   imageUrl: {
     type: String // Album artwork
@@ -113,10 +106,13 @@ const songSchema = new mongoose.Schema({
 
   // External URLs
   externalUrls: {
-    spotify: String,
-    deezer: String,
-    lastfm: String,
-    youtube: String
+    spotify: String
+  },
+
+  // International music support
+  country: {
+    type: String, // Country code (US, JP, KR, IN, BR, etc.)
+    trim: true
   },
 
   // Licensing and availability
@@ -132,7 +128,7 @@ const songSchema = new mongoose.Schema({
   // Source tracking
   source: {
     type: String,
-    enum: ['spotify', 'deezer', 'lastfm', 'manual'],
+    enum: ['spotify', 'manual'],
     required: true
   },
 
@@ -152,10 +148,11 @@ const songSchema = new mongoose.Schema({
 // Indexes for better query performance
 songSchema.index({ title: 'text', artist: 'text', album: 'text' });
 songSchema.index({ spotifyId: 1 });
-songSchema.index({ deezerId: 1 });
 songSchema.index({ popularity: -1 });
 songSchema.index({ releaseYear: -1 });
 songSchema.index({ genres: 1 });
+songSchema.index({ country: 1 });
+songSchema.index({ source: 1 });
 
 // Virtual for formatted duration
 songSchema.virtual('durationFormatted').get(function() {
