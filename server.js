@@ -69,17 +69,38 @@ app.use(helmet({
 // Rate limiting (skip preflight)
 const limiter = rateLimit({
   windowMs: parseInt(process.env.RATE_LIMIT_WINDOW_MS) || 15 * 60 * 1000, // 15 minutes
-  max: parseInt(process.env.RATE_LIMIT_MAX_REQUESTS) || 100, // limit each IP to 100 requests per windowMs
+  max: parseInt(process.env.RATE_LIMIT_MAX_REQUESTS) || 1000, // limit each IP to 1000 requests per windowMs (increased for development)
   message: {
     error: 'Too many requests from this IP, please try again later.',
     retryAfter: Math.ceil((parseInt(process.env.RATE_LIMIT_WINDOW_MS) || 15 * 60 * 1000) / 1000)
   },
   standardHeaders: true,
   legacyHeaders: false,
-  skip: (req) => req.method === 'OPTIONS'
+  skip: (req) => req.method === 'OPTIONS',
+  keyGenerator: (req) => {
+    // Use a more specific key for development
+    return req.ip + ':' + req.get('User-Agent');
+  }
 });
 
-app.use('/api/', limiter);
+// Apply different rate limiting based on environment
+if (process.env.NODE_ENV === 'development') {
+  // More lenient rate limiting for development
+  const devLimiter = rateLimit({
+    windowMs: 1 * 60 * 1000, // 1 minute
+    max: 100, // 100 requests per minute
+    message: {
+      error: 'Too many requests from this IP, please try again later.',
+      retryAfter: 60
+    },
+    standardHeaders: true,
+    legacyHeaders: false,
+    skip: (req) => req.method === 'OPTIONS'
+  });
+  app.use('/api/', devLimiter);
+} else {
+  app.use('/api/', limiter);
+}
 
 // Socket.IO setup
 const io = new Server(server, {
@@ -105,7 +126,7 @@ io.use(async (socket, next) => {
       return next(new Error('Authentication error: No token provided'));
     }
 
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    const decoded = jwt.verify(token, process.env.JWT_SECRET || 'default-jwt-secret-change-in-production');
     const User = require('./models/User');
     const user = await User.findById(decoded.id);
     
@@ -333,6 +354,16 @@ app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 // Custom middleware
 app.use(logger);
 
+// Add cache control headers for development
+if (process.env.NODE_ENV === 'development') {
+  app.use((req, res, next) => {
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
+    next();
+  });
+}
+
 // Health check endpoint
 app.get('/health', (req, res) => {
   res.status(200).json({
@@ -368,7 +399,8 @@ app.use(errorHandler);
 // MongoDB connection
 const connectDB = async () => {
   try {
-    const conn = await mongoose.connect(process.env.MONGODB_URI, {
+    const mongoUri = process.env.MONGODB_URI || 'mongodb://localhost:27017/audix';
+    const conn = await mongoose.connect(mongoUri, {
       maxPoolSize: parseInt(process.env.DB_MAX_POOL_SIZE) || 10,
       minPoolSize: parseInt(process.env.DB_MIN_POOL_SIZE) || 5,
       maxIdleTimeMS: 30000,

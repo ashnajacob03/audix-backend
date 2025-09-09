@@ -550,6 +550,13 @@ router.get('/profile', auth, async (req, res) => {
           accountType: user.accountType,
           isAdmin: user.isAdmin,
           preferences: user.preferences,
+          dateOfBirth: user.dateOfBirth,
+          gender: user.gender,
+          country: user.country,
+          phone: user.phone,
+          bio: user.bio,
+          website: user.website,
+          location: user.location,
           createdAt: user.createdAt,
           lastLogin: user.lastLogin,
           loginCount: user.loginCount
@@ -596,7 +603,37 @@ router.put('/profile', [
     .optional()
     .trim()
     .isLength({ max: 100 })
-    .withMessage('Country name too long')
+    .withMessage('Country name too long'),
+  
+  body('phone')
+    .optional()
+    .trim()
+    .custom((value) => {
+      if (!value || value === '') return true; // Allow empty values
+      return /^[\+]?[1-9][\d]{0,15}$/.test(value); // Basic phone validation
+    })
+    .withMessage('Please provide a valid phone number'),
+  
+  body('bio')
+    .optional()
+    .trim()
+    .isLength({ max: 500 })
+    .withMessage('Bio cannot exceed 500 characters'),
+  
+  body('website')
+    .optional()
+    .trim()
+    .custom((value) => {
+      if (!value || value === '') return true; // Allow empty values
+      return /^https?:\/\/.+/.test(value);
+    })
+    .withMessage('Please provide a valid website URL starting with http:// or https://'),
+  
+  body('location')
+    .optional()
+    .trim()
+    .isLength({ max: 100 })
+    .withMessage('Location name too long')
 ], async (req, res) => {
   try {
     // Check for validation errors
@@ -619,7 +656,7 @@ router.put('/profile', [
     }
 
     // Update allowed fields
-    const allowedUpdates = ['firstName', 'lastName', 'dateOfBirth', 'gender', 'country'];
+    const allowedUpdates = ['firstName', 'lastName', 'dateOfBirth', 'gender', 'country', 'phone', 'bio', 'website', 'location'];
     const updates = {};
     
     allowedUpdates.forEach(field => {
@@ -645,6 +682,10 @@ router.put('/profile', [
           dateOfBirth: user.dateOfBirth,
           gender: user.gender,
           country: user.country,
+          phone: user.phone,
+          bio: user.bio,
+          website: user.website,
+          location: user.location,
           updatedAt: user.updatedAt
         }
       }

@@ -33,7 +33,7 @@ const auth = async (req, res, next) => {
 
     try {
       // Verify token
-      const decoded = jwt.verify(token, process.env.JWT_SECRET);
+      const decoded = jwt.verify(token, process.env.JWT_SECRET || 'default-jwt-secret-change-in-production');
       
       // Check if it's a refresh token (should not be used for API access)
       if (decoded.type === 'refresh') {
@@ -138,7 +138,7 @@ const optionalAuth = async (req, res, next) => {
     }
 
     try {
-      const decoded = jwt.verify(token, process.env.JWT_SECRET);
+      const decoded = jwt.verify(token, process.env.JWT_SECRET || 'default-jwt-secret-change-in-production');
       
       if (decoded.type === 'refresh') {
         return next(); // Continue without authentication

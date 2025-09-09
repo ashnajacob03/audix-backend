@@ -629,7 +629,7 @@ router.post('/refresh-token', async (req, res) => {
     }
 
     // Verify refresh token
-    const decoded = jwt.verify(refreshToken, process.env.JWT_SECRET);
+    const decoded = jwt.verify(refreshToken, process.env.JWT_SECRET || 'default-jwt-secret-change-in-production');
     
     if (decoded.type !== 'refresh') {
       return res.status(401).json({

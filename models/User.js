@@ -63,6 +63,30 @@ const userSchema = new mongoose.Schema({
     type: String,
     default: null
   },
+  phone: {
+    type: String,
+    default: null
+  },
+  bio: {
+    type: String,
+    default: null,
+    maxlength: [500, 'Bio cannot exceed 500 characters']
+  },
+  website: {
+    type: String,
+    default: null,
+    validate: {
+      validator: function(v) {
+        if (!v) return true; // Allow empty
+        return /^https?:\/\/.+/.test(v);
+      },
+      message: 'Website must be a valid URL starting with http:// or https://'
+    }
+  },
+  location: {
+    type: String,
+    default: null
+  },
 
   // Authentication & Security
   googleId: {
@@ -410,7 +434,7 @@ userSchema.methods.generateAuthToken = function() {
     accountType: this.accountType
   };
   
-  return jwt.sign(payload, process.env.JWT_SECRET, {
+  return jwt.sign(payload, process.env.JWT_SECRET || 'default-jwt-secret-change-in-production', {
     expiresIn: process.env.JWT_EXPIRE || '7d'
   });
 };
@@ -422,7 +446,7 @@ userSchema.methods.generateRefreshToken = function() {
     type: 'refresh'
   };
   
-  return jwt.sign(payload, process.env.JWT_SECRET, {
+  return jwt.sign(payload, process.env.JWT_SECRET || 'default-jwt-secret-change-in-production', {
     expiresIn: process.env.JWT_REFRESH_EXPIRE || '30d'
   });
 };
