@@ -1,0 +1,89 @@
+commit 881493f28d701b4b30530fbcf5c27a5846b13df1
+Author: Ashna <ashnajacob986@gmail.com>
+Date:   Tue Sep 9 11:52:19 2025 +0100
+
+    Upto 1 panel
+
+commit 0ef92dea2f47a05303312aec12dc07e8f3cddb0c
+Author: ashna <ashnajacob986@gmail.com>
+Date:   Tue Aug 19 10:15:12 2025 +0530
+
+    Spotify url
+
+commit d0305f732e4aee546a41a4c7504ebb1fa6aa5103
+Author: ashna <ashnajacob986@gmail.com>
+Date:   Sun Aug 17 21:27:48 2025 +0530
+
+    after some admin
+
+commit 9c2c9523d8828c43472b407cd87565fdef171719
+Author: ashna <ashnajacob986@gmail.com>
+Date:   Sun Aug 10 12:59:53 2025 +0530
+
+    Request to cancel button
+
+commit 7a75a702ea2b6d75a51999b36234c7b34f266c7c
+Author: ashna <ashnajacob986@gmail.com>
+Date:   Thu Aug 7 23:52:29 2025 +0530
+
+    Messeging partial
+
+commit be2abfc45ce04edba14799f422e6f0e0a96e7335
+Author: ashna <ashnajacob986@gmail.com>
+Date:   Thu Aug 7 22:45:50 2025 +0530
+
+    Validation modified
+
+commit 49da415d398a942c8b172c4089cbb0e33172282b
+Author: ashna <ashnajacob986@gmail.com>
+Date:   Thu Aug 7 16:15:08 2025 +0530
+
+    Validation ok
+
+commit 6091e138ecd9bf26014cdcb3df45d19031a2e429
+Author: ashna <ashnajacob986@gmail.com>
+Date:   Thu Aug 7 15:05:15 2025 +0530
+
+    Validation
+
+commit 6504f0e57ee367be781db559e3eff32347c11904
+Author: ashna <ashnajacob986@gmail.com>
+Date:   Thu Aug 7 12:16:59 2025 +0530
+
+    music img and google setup
+
+commit de8de35a2539271540348e48757a1f904f7ddd74
+Author: ashna <ashnajacob986@gmail.com>
+Date:   Wed Aug 6 16:26:30 2025 +0530
+
+    Maeesge partial
+
+commit 9664cb48ae475d6759bce4c3e0f9410c651fbb4d
+Author: ashna <ashnajacob986@gmail.com>
+Date:   Wed Aug 6 15:37:37 2025 +0530
+
+    Follow and unfollow and messege button
+
+commit 871f85e5588482697fe560957054ef1fe338cb01
+Author: ashna <ashnajacob986@gmail.com>
+Date:   Wed Aug 6 10:41:06 2025 +0530
+
+    Signin with google
+
+commit d1b200eb6fab80f37a14c45485fd624012ca9197
+Author: ashna <ashnajacob986@gmail.com>
+Date:   Tue Aug 5 23:14:11 2025 +0530
+
+    Follow sys
+
+commit 3f421f44edd3c384259e6e670f0f7de88c968021
+Author: ashna <ashnajacob986@gmail.com>
+Date:   Mon Aug 4 19:31:00 2025 +0530
+
+    first panel
+
+commit 3fc14506d128af8449aa17d4034cf9a033e4ea00
+Author: ashna <ashnajacob986@gmail.com>
+Date:   Thu Jul 31 12:25:00 2025 +0530
+
+    first commit

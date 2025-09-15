@@ -431,7 +431,8 @@ userSchema.methods.generateAuthToken = function() {
   const payload = {
     id: this._id,
     email: this.email,
-    accountType: this.accountType
+    accountType: this.accountType,
+    type: 'access'
   };
   
   return jwt.sign(payload, process.env.JWT_SECRET || 'default-jwt-secret-change-in-production', {

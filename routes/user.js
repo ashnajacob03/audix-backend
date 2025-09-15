@@ -2,8 +2,24 @@ const express = require('express');
 const { body, validationResult } = require('express-validator');
 const User = require('../models/User');
 const { auth } = require('../middleware/auth');
+const expressValidator = require('express-validator');
+const { body: bodyValidator, validationResult: validationResultValidator } = expressValidator;
 
 const router = express.Router();
+
+// Helper to normalize Google profile image URLs
+const normalizeProfileImageUrl = (imageUrl) => {
+  if (!imageUrl) return null;
+  try {
+    if (typeof imageUrl === 'string' && imageUrl.includes('googleusercontent.com')) {
+      const baseUrl = imageUrl.split('=')[0];
+      return `${baseUrl}=s400-c`;
+    }
+    return imageUrl;
+  } catch (e) {
+    return imageUrl;
+  }
+};
 
 // @route   GET /api/user/all
 // @desc    Get all users except current user (for friends/follow suggestions)
@@ -88,6 +104,58 @@ router.get('/all', auth, async (req, res) => {
       success: false,
       message: 'Internal server error'
     });
+  }
+});
+
+// @route   PUT /api/user/profile-picture
+// @desc    Update user profile picture (URL or data URL)
+// @access  Private
+router.put('/profile-picture', [
+  auth,
+  body('picture')
+    .optional({ nullable: true })
+    .custom((value) => {
+      if (value === null) return true; // allow removing picture
+      if (typeof value !== 'string') throw new Error('Picture must be a string');
+      // Accept http(s) URL or data URL
+      const isHttpUrl = /^https?:\/\//i.test(value);
+      const isDataUrl = /^data:image\/(png|jpg|jpeg|webp);base64,/i.test(value);
+      if (!isHttpUrl && !isDataUrl) throw new Error('Picture must be a valid URL or base64 data URL');
+      // Basic max size check for data URLs (~5MB)
+      if (isDataUrl) {
+        const base64 = value.split(',')[1] || '';
+        const approxBytes = Math.floor(base64.length * 3 / 4);
+        if (approxBytes > 5 * 1024 * 1024) throw new Error('Image size exceeds 5MB limit');
+      }
+      return true;
+    })
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ success: false, message: 'Validation failed', errors: errors.array() });
+    }
+
+    const user = await User.findById(req.user.id);
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+
+    const incoming = req.body.picture ?? null;
+    const normalized = normalizeProfileImageUrl(incoming);
+    user.profilePicture = normalized;
+    await user.save();
+
+    res.json({
+      success: true,
+      message: normalized ? 'Profile picture updated' : 'Profile picture removed',
+      data: {
+        picture: user.profilePicture
+      }
+    });
+  } catch (error) {
+    console.error('Update profile picture error:', error);
+    res.status(500).json({ success: false, message: 'Internal server error' });
   }
 });
 
@@ -1026,6 +1094,65 @@ router.get('/friends', auth, async (req, res) => {
       success: false,
       message: 'Internal server error'
     });
+  }
+});
+
+// @route   PUT /api/user/subscription
+// @desc    Update user's subscription/account type
+// @access  Private
+router.put('/subscription', [
+  auth,
+  body('accountType')
+    .isIn(['free', 'premium', 'family', 'student'])
+    .withMessage('Invalid account type'),
+  body('subscriptionExpires')
+    .optional({ nullable: true })
+    .isISO8601()
+    .withMessage('subscriptionExpires must be a valid date if provided')
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({
+        success: false,
+        message: 'Validation failed',
+        errors: errors.array()
+      });
+    }
+
+    const user = await User.findById(req.user.id);
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+
+    const { accountType, subscriptionExpires } = req.body;
+    user.accountType = accountType;
+    if (subscriptionExpires !== undefined) {
+      user.subscriptionExpires = subscriptionExpires ? new Date(subscriptionExpires) : null;
+    }
+    await user.save();
+
+    return res.json({
+      success: true,
+      message: 'Subscription updated',
+      data: {
+        user: {
+          id: user._id,
+          firstName: user.firstName,
+          lastName: user.lastName,
+          name: user.fullName,
+          email: user.email,
+          picture: user.profilePicture,
+          accountType: user.accountType,
+          subscriptionExpires: user.subscriptionExpires,
+          isAdmin: user.isAdmin,
+          isEmailVerified: user.isEmailVerified,
+        }
+      }
+    });
+  } catch (error) {
+    console.error('Update subscription error:', error);
+    res.status(500).json({ success: false, message: 'Internal server error' });
   }
 });
 

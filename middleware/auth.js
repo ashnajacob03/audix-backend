@@ -6,7 +6,15 @@ const auth = async (req, res, next) => {
     // Get token from header
     const authHeader = req.header('Authorization');
     
+    console.log('Auth Middleware Debug:', {
+      url: req.url,
+      method: req.method,
+      hasAuthHeader: !!authHeader,
+      authHeaderStart: authHeader?.substring(0, 20) + '...'
+    });
+    
     if (!authHeader) {
+      console.log('Auth Middleware: No authorization header');
       return res.status(401).json({
         success: false,
         message: 'Access denied. No token provided.'
@@ -35,8 +43,16 @@ const auth = async (req, res, next) => {
       // Verify token
       const decoded = jwt.verify(token, process.env.JWT_SECRET || 'default-jwt-secret-change-in-production');
       
+      console.log('Auth Middleware: Token decoded successfully:', {
+        userId: decoded.id,
+        email: decoded.email,
+        type: decoded.type,
+        accountType: decoded.accountType
+      });
+      
       // Check if it's a refresh token (should not be used for API access)
       if (decoded.type === 'refresh') {
+        console.log('Auth Middleware: Refresh token used for API access');
         return res.status(401).json({
           success: false,
           message: 'Access denied. Invalid token type.'
@@ -46,7 +62,15 @@ const auth = async (req, res, next) => {
       // Get user from database
       const user = await User.findById(decoded.id);
       
+      console.log('Auth Middleware: User lookup result:', {
+        userId: decoded.id,
+        userFound: !!user,
+        userActive: user?.isActive,
+        userEmail: user?.email
+      });
+      
       if (!user) {
+        console.log('Auth Middleware: User not found in database');
         return res.status(401).json({
           success: false,
           message: 'Access denied. User not found.'
@@ -55,15 +79,16 @@ const auth = async (req, res, next) => {
 
       // Check if user account is active
       if (!user.isActive) {
+        console.log('Auth Middleware: User account is inactive');
         return res.status(401).json({
           success: false,
           message: 'Access denied. Account has been deactivated.'
         });
       }
 
-      // Add user info to request object
+      // Add user info to request object (normalize id to string to avoid ObjectId vs string mismatches)
       req.user = {
-        id: user._id,
+        id: user._id.toString(),
         email: user.email,
         accountType: user.accountType,
         isEmailVerified: user.isEmailVerified
@@ -71,6 +96,12 @@ const auth = async (req, res, next) => {
 
       next();
     } catch (jwtError) {
+      console.log('Auth Middleware: JWT verification failed:', {
+        errorName: jwtError.name,
+        errorMessage: jwtError.message,
+        tokenStart: token?.substring(0, 20) + '...'
+      });
+      
       if (jwtError.name === 'TokenExpiredError') {
         return res.status(401).json({
           success: false,
@@ -148,7 +179,7 @@ const optionalAuth = async (req, res, next) => {
       
       if (user && user.isActive) {
         req.user = {
-          id: user._id,
+          id: user._id.toString(),
           email: user.email,
           accountType: user.accountType,
           isEmailVerified: user.isEmailVerified

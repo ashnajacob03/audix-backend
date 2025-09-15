@@ -2,7 +2,7 @@ const express = require('express');
 const router = express.Router();
 const axios = require('axios');
 const { body, validationResult, query } = require('express-validator');
-const { auth } = require('../middleware/auth');
+const { auth, optionalAuth } = require('../middleware/auth');
 const Song = require('../models/Song');
 const Playlist = require('../models/Playlist');
 const User = require('../models/User');
@@ -403,13 +403,33 @@ router.get('/genres/:genre', [
 // Get user's playlists
 router.get('/playlists', auth, async (req, res) => {
   try {
-    const playlists = await Playlist.find({
-      $or: [
-        { owner: req.user.id },
-        { followers: req.user.id },
-        { isPublic: true }
-      ]
-    })
+    // Support scope filtering for clearer UX of "Your Playlists"
+    // scope=mine|following|public|all (default: all similar to previous behavior)
+    const { scope } = req.query;
+
+    let filter;
+    switch (scope) {
+      case 'mine':
+        filter = { owner: req.user.id };
+        break;
+      case 'following':
+        filter = { followers: req.user.id };
+        break;
+      case 'public':
+        filter = { isPublic: true };
+        break;
+      case 'all':
+      default:
+        filter = {
+          $or: [
+            { owner: req.user.id },
+            { followers: req.user.id },
+            { isPublic: true }
+          ]
+        };
+    }
+
+    const playlists = await Playlist.find(filter)
     .populate('owner', 'firstName lastName username')
     .populate('songs.song', 'title artist album imageUrl duration')
     .sort({ updatedAt: -1 });
@@ -424,21 +444,25 @@ router.get('/playlists', auth, async (req, res) => {
 // Create new playlist
 router.post('/playlists', [
   auth,
-  body('name').notEmpty().trim().withMessage('Playlist name is required'),
   body('description').optional().trim(),
   body('isPublic').optional().isBoolean().withMessage('isPublic must be a boolean'),
   body('mood').optional().isIn(['happy', 'sad', 'energetic', 'chill', 'romantic', 'workout', 'study', 'party', 'sleep', 'other'])
 ], async (req, res) => {
   try {
+    console.log('Create playlist request:', {
+      rawBody: req.body,
+      userId: req.user?.id
+    });
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
       return res.status(400).json({ errors: errors.array() });
     }
 
-    const { name, description, isPublic = true, mood, tags } = req.body;
+    const { name, title, playlistName, description, isPublic = true, mood, tags } = req.body;
+    const cleanedName = (name || title || playlistName || '').trim() || 'Untitled Playlist';
 
     const playlist = new Playlist({
-      name,
+      name: cleanedName,
       description,
       owner: req.user.id,
       isPublic,
@@ -456,8 +480,8 @@ router.post('/playlists', [
   }
 });
 
-// Get playlist by ID
-router.get('/playlists/:id', async (req, res) => {
+// Get playlist by ID (optional auth to allow owner/collab access for private)
+router.get('/playlists/:id', optionalAuth, async (req, res) => {
   try {
     const playlist = await Playlist.findById(req.params.id)
       .populate('owner', 'firstName lastName username')
@@ -469,8 +493,15 @@ router.get('/playlists/:id', async (req, res) => {
     }
 
     // Check if user can view this playlist
-    if (!playlist.isPublic && (!req.user || playlist.owner._id.toString() !== req.user.id)) {
-      return res.status(403).json({ message: 'Access denied' });
+    if (!playlist.isPublic) {
+      if (!req.user) {
+        return res.status(403).json({ message: 'Access denied' });
+      }
+      const isOwner = playlist.owner._id.toString() === req.user.id;
+      const isCollaborator = Array.isArray(playlist.collaborators) && playlist.collaborators.some(id => id.toString() === req.user.id);
+      if (!isOwner && !isCollaborator) {
+        return res.status(403).json({ message: 'Access denied' });
+      }
     }
 
     res.json(playlist);
@@ -499,7 +530,9 @@ router.post('/playlists/:id/songs', [
     }
 
     // Check if user owns the playlist or is a collaborator
-    if (playlist.owner.toString() !== req.user.id && !playlist.collaborators.includes(req.user.id)) {
+    const isOwner = playlist.owner.toString() === req.user.id;
+    const isCollaborator = Array.isArray(playlist.collaborators) && playlist.collaborators.some(id => id.toString() === req.user.id);
+    if (!isOwner && !isCollaborator) {
       return res.status(403).json({ message: 'Access denied' });
     }
 
@@ -521,6 +554,11 @@ router.post('/playlists/:id/songs', [
       position: playlist.songs.length
     });
 
+    // Update total duration if song has duration metadata
+    if (typeof song.duration === 'number' && !Number.isNaN(song.duration)) {
+      playlist.totalDuration = (playlist.totalDuration || 0) + song.duration;
+    }
+
     await playlist.save();
     await playlist.populate('songs.song', 'title artist album imageUrl duration');
 
@@ -541,11 +579,27 @@ router.delete('/playlists/:id/songs/:songId', auth, async (req, res) => {
       return res.status(404).json({ message: 'Playlist not found' });
     }
 
-    if (playlist.owner.toString() !== req.user.id && !playlist.collaborators.includes(req.user.id)) {
+    const isOwner = playlist.owner.toString() === req.user.id;
+    const isCollaborator = Array.isArray(playlist.collaborators) && playlist.collaborators.some(cid => cid.toString() === req.user.id);
+    if (!isOwner && !isCollaborator) {
       return res.status(403).json({ message: 'Access denied' });
     }
 
+    // Find the removed entry to adjust duration
+    const removedEntry = playlist.songs.find(s => s.song.toString() === songId);
+
     playlist.songs = playlist.songs.filter(s => s.song.toString() !== songId);
+
+    // Reindex positions
+    playlist.songs.forEach((s, index) => { s.position = index; });
+
+    // Decrement total duration if possible
+    if (removedEntry) {
+      const removedSong = await Song.findById(removedEntry.song);
+      if (removedSong && typeof removedSong.duration === 'number' && !Number.isNaN(removedSong.duration)) {
+        playlist.totalDuration = Math.max(0, (playlist.totalDuration || 0) - removedSong.duration);
+      }
+    }
     await playlist.save();
 
     res.json({ message: 'Song removed from playlist' });
@@ -563,7 +617,7 @@ router.post('/playlists/:id/follow', auth, async (req, res) => {
       return res.status(404).json({ message: 'Playlist not found' });
     }
 
-    const isFollowing = playlist.followers.includes(req.user.id);
+    const isFollowing = Array.isArray(playlist.followers) && playlist.followers.some(id => id.toString() === req.user.id);
     
     if (isFollowing) {
       playlist.followers = playlist.followers.filter(id => id.toString() !== req.user.id);
