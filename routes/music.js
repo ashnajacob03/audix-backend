@@ -183,9 +183,39 @@ router.get('/songs/:id/stream', async (req, res) => {
       }
     }
 
-    // Fallback to Spotify 30s preview if available
+    // Fallback to Spotify 30s preview if available — proxy instead of redirect to avoid CORS
     if (song.previewUrl) {
-      return res.redirect(song.previewUrl);
+      try {
+        const range = req.headers.range;
+        const proxyHeaders = {
+          ...(range ? { Range: range } : {}),
+          'User-Agent': req.headers['user-agent'] || 'Audix/1.0',
+          'Accept': '*/*'
+        };
+        const upstream = await axios.get(song.previewUrl, {
+          responseType: 'stream',
+          headers: proxyHeaders,
+          validateStatus: (status) => status >= 200 && status < 400
+        });
+
+        res.status(upstream.status);
+        const passthroughHeaders = [
+          'content-type',
+          'content-length',
+          'accept-ranges',
+          'content-range',
+          'cache-control',
+        ];
+        passthroughHeaders.forEach((h) => {
+          const v = upstream.headers[h];
+          if (v) res.setHeader(h, v);
+        });
+
+        upstream.data.pipe(res);
+        return;
+      } catch (previewErr) {
+        console.error('Preview proxy failed:', previewErr.message);
+      }
     }
 
     // Last-resort fallback: try iTunes Search API for a preview clip
