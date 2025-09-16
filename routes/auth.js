@@ -544,7 +544,7 @@ router.post('/login', validateLogin, async (req, res) => {
 
     const tokenExpiry = rememberMe ? '30d' : (process.env.JWT_EXPIRE || '7d');
 
-    const token = user.generateAuthToken();
+    const token = user.generateAuthToken(tokenExpiry);
 
     const refreshToken = user.generateRefreshToken();
 
@@ -784,7 +784,7 @@ router.post('/google', async (req, res) => {
 
     // Generate tokens
 
-    const token = user.generateAuthToken();
+    const token = user.generateAuthToken(process.env.JWT_EXPIRE || '7d');
 
     const refreshToken = user.generateRefreshToken();
 
@@ -1186,7 +1186,7 @@ router.post('/reset-password', validateResetPassword, async (req, res) => {
 
     // Generate new tokens
 
-    const authToken = user.generateAuthToken();
+    const authToken = user.generateAuthToken(process.env.JWT_EXPIRE || '7d');
 
     const refreshToken = user.generateRefreshToken();
 
@@ -1316,7 +1316,7 @@ router.post('/refresh-token', async (req, res) => {
 
     // Generate new tokens
 
-    const newAccessToken = user.generateAuthToken();
+    const newAccessToken = user.generateAuthToken(process.env.JWT_EXPIRE || '7d');
 
     const newRefreshToken = user.generateRefreshToken();
 

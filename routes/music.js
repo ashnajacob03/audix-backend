@@ -474,12 +474,16 @@ router.get('/playlists', auth, async (req, res) => {
 // Create new playlist
 router.post('/playlists', [
   auth,
+  body('name').optional().isString().trim().isLength({ min: 1 }).withMessage('Name is required'),
+  body('title').optional().isString().trim(),
+  body('playlistName').optional().isString().trim(),
   body('description').optional().trim(),
   body('isPublic').optional().isBoolean().withMessage('isPublic must be a boolean'),
   body('mood').optional().isIn(['happy', 'sad', 'energetic', 'chill', 'romantic', 'workout', 'study', 'party', 'sleep', 'other'])
 ], async (req, res) => {
   try {
     console.log('Create playlist request:', {
+      rawType: typeof req.body,
       rawBody: req.body,
       userId: req.user?.id
     });
@@ -488,12 +492,24 @@ router.post('/playlists', [
       return res.status(400).json({ errors: errors.array() });
     }
 
-    const { name, title, playlistName, description, isPublic = true, mood, tags } = req.body;
-    const cleanedName = (name || title || playlistName || '').trim() || 'Untitled Playlist';
+    // Support stringified JSON bodies defensively
+    let bodyObj = req.body;
+    if (typeof bodyObj === 'string') {
+      try { bodyObj = JSON.parse(bodyObj); } catch {}
+    }
+
+    const { name, title, playlistName, description, isPublic = true, mood, tags } = bodyObj || {};
+    // Prefer explicit 'name'; then fall back to 'title' or 'playlistName' if provided.
+    const candidates = [name, title, playlistName].filter(v => typeof v === 'string');
+    const firstNonEmpty = candidates.map(v => v.trim()).find(v => v.length > 0) || '';
+    const cleanedName = firstNonEmpty.trim();
+    if (!cleanedName) {
+      return res.status(400).json({ message: 'Playlist name is required' });
+    }
 
     const playlist = new Playlist({
       name: cleanedName,
-      description,
+      description: typeof description === 'string' ? description : undefined,
       owner: req.user.id,
       isPublic,
       mood,

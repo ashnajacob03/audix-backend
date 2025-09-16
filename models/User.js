@@ -427,7 +427,7 @@ userSchema.methods.comparePassword = async function(candidatePassword) {
 };
 
 // Method to generate JWT token
-userSchema.methods.generateAuthToken = function() {
+userSchema.methods.generateAuthToken = function(expiresIn) {
   const payload = {
     id: this._id,
     email: this.email,
@@ -436,7 +436,7 @@ userSchema.methods.generateAuthToken = function() {
   };
   
   return jwt.sign(payload, process.env.JWT_SECRET || 'default-jwt-secret-change-in-production', {
-    expiresIn: process.env.JWT_EXPIRE || '7d'
+    expiresIn: expiresIn || (process.env.JWT_EXPIRE || '7d')
   });
 };
 
