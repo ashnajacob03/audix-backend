@@ -5,6 +5,7 @@ const { body, validationResult, query } = require('express-validator');
 const { auth, optionalAuth } = require('../middleware/auth');
 const Song = require('../models/Song');
 const Playlist = require('../models/Playlist');
+const Artist = require('../models/Artist');
 const User = require('../models/User');
 const musicApiService = require('../services/musicApiService');
 
@@ -424,6 +425,87 @@ router.get('/genres/:genre', [
     res.json(songs);
   } catch (error) {
     console.error('Error fetching songs by genre:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// ===== ARTIST ROUTES =====
+
+// Get artists that have available songs in the system
+router.get('/artists', [optionalAuth,
+  query('page').optional().isInt({ min: 1 }).withMessage('Page must be a positive integer'),
+  query('limit').optional().isInt({ min: 1, max: 100 }).withMessage('Limit must be between 1 and 100'),
+  query('search').optional().isString().withMessage('Search must be a string'),
+  query('order').optional().isIn(['asc', 'desc']).withMessage('Order must be asc or desc')
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ errors: errors.array() });
+    }
+
+    const { page = 1, limit = 24, search = '', order = 'desc' } = req.query;
+    const skip = (page - 1) * limit;
+
+    const match = { isAvailable: true };
+    if (search) {
+      match.artist = { $regex: search, $options: 'i' };
+    }
+
+    const pipeline = [
+      { $match: match },
+      { $group: {
+          _id: '$artist',
+          name: { $first: '$artist' },
+          songCount: { $sum: 1 },
+          latestSong: { $first: '$$ROOT' },
+        }
+      },
+      { $sort: { songCount: order === 'desc' ? -1 : 1, name: 1 } },
+      { $skip: parseInt(skip) },
+      { $limit: parseInt(limit) }
+    ];
+
+    const artistsAgg = await Song.aggregate(pipeline);
+
+    // Try to enrich with stored artist images if present
+    const names = artistsAgg.map(a => a.name);
+    const artistDocs = await Artist.find({ name: { $in: names } }).select('name imageUrl followerCount');
+    const nameToDoc = new Map(artistDocs.map(doc => [doc.name, doc]));
+
+    const currentUserId = req.user?.id?.toString?.();
+
+    const artists = artistsAgg.map(a => {
+      const doc = nameToDoc.get(a.name);
+      const isFollowing = !!(currentUserId && doc && Array.isArray(doc.followers) && doc.followers.some(id => id.toString() === currentUserId));
+      return {
+        name: a.name,
+        imageUrl: doc?.imageUrl || a.latestSong?.imageUrl || a.latestSong?.largeImageUrl || null,
+        songCount: a.songCount,
+        followerCount: doc?.followerCount || 0,
+        isFollowing,
+      };
+    });
+
+    // Total unique artists count for pagination
+    const countAgg = await Song.aggregate([
+      { $match: match },
+      { $group: { _id: '$artist' } },
+      { $count: 'total' }
+    ]);
+    const total = countAgg?.[0]?.total || 0;
+
+    res.json({
+      artists,
+      pagination: {
+        page: parseInt(page),
+        limit: parseInt(limit),
+        total,
+        pages: Math.ceil(total / limit)
+      }
+    });
+  } catch (error) {
+    console.error('Error fetching artists:', error);
     res.status(500).json({ message: 'Server error' });
   }
 });

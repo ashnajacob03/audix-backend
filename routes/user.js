@@ -1,6 +1,7 @@
 const express = require('express');
 const { body, validationResult } = require('express-validator');
 const User = require('../models/User');
+const Artist = require('../models/Artist');
 const { auth } = require('../middleware/auth');
 const expressValidator = require('express-validator');
 const { body: bodyValidator, validationResult: validationResultValidator } = expressValidator;
@@ -510,6 +511,58 @@ router.delete('/follow/:userId', auth, async (req, res) => {
       success: false,
       message: 'Internal server error'
     });
+  }
+});
+
+// @route   POST /api/user/follow-artist
+// @desc    Toggle follow/unfollow for an artist by name
+// @access  Private
+router.post('/follow-artist', auth, async (req, res) => {
+  try {
+    // Accept JSON body, stringified JSON, or query param
+    let body = req.body;
+    if (typeof body === 'string') {
+      try { body = JSON.parse(body); } catch { body = {}; }
+    }
+    const candidate = (body && typeof body.name === 'string' ? body.name : '') || (typeof req.query.name === 'string' ? req.query.name : '');
+    const name = candidate && candidate.trim();
+    if (!name) {
+      return res.status(400).json({ success: false, message: 'Artist name is required' });
+    }
+
+    let artistDoc = await Artist.findOne({ name });
+    if (!artistDoc) {
+      artistDoc = await Artist.create({ name });
+    }
+
+    const user = await User.findById(req.user.id);
+    const isFollowing = Array.isArray(user.followedArtists) && user.followedArtists.some(id => id.toString() === artistDoc._id.toString());
+
+    if (isFollowing) {
+      user.followedArtists = user.followedArtists.filter(id => id.toString() !== artistDoc._id.toString());
+      artistDoc.followers = (artistDoc.followers || []).filter(id => id.toString() !== user._id.toString());
+      artistDoc.followerCount = Math.max(0, (artistDoc.followerCount || 0) - 1);
+    } else {
+      user.followedArtists.push(artistDoc._id);
+      artistDoc.followers = Array.isArray(artistDoc.followers) ? artistDoc.followers : [];
+      if (!artistDoc.followers.some(id => id.toString() === user._id.toString())) {
+        artistDoc.followers.push(user._id);
+      }
+      artistDoc.followerCount = (artistDoc.followerCount || 0) + 1;
+    }
+
+    await Promise.all([user.save(), artistDoc.save()]);
+
+    res.json({
+      success: true,
+      message: isFollowing ? 'Unfollowed artist' : 'Followed artist',
+      isFollowing: !isFollowing,
+      artistId: artistDoc._id,
+      name: artistDoc.name
+    });
+  } catch (error) {
+    console.error('Follow artist error:', error);
+    res.status(500).json({ success: false, message: 'Internal server error' });
   }
 });
 
