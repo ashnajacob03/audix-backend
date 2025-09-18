@@ -543,12 +543,15 @@ router.post('/follow-artist', auth, async (req, res) => {
       artistDoc.followers = (artistDoc.followers || []).filter(id => id.toString() !== user._id.toString());
       artistDoc.followerCount = Math.max(0, (artistDoc.followerCount || 0) - 1);
     } else {
-      user.followedArtists.push(artistDoc._id);
+      // Add only if not already present
+      if (!user.followedArtists.some(id => id.toString() === artistDoc._id.toString())) {
+        user.followedArtists.push(artistDoc._id);
+      }
       artistDoc.followers = Array.isArray(artistDoc.followers) ? artistDoc.followers : [];
       if (!artistDoc.followers.some(id => id.toString() === user._id.toString())) {
         artistDoc.followers.push(user._id);
+        artistDoc.followerCount = (artistDoc.followerCount || 0) + 1;
       }
-      artistDoc.followerCount = (artistDoc.followerCount || 0) + 1;
     }
 
     await Promise.all([user.save(), artistDoc.save()]);

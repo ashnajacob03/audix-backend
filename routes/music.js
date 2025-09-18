@@ -510,6 +510,37 @@ router.get('/artists', [optionalAuth,
   }
 });
 
+// Get a single artist profile with their available songs
+router.get('/artist/:name', optionalAuth, async (req, res) => {
+  try {
+    const rawName = req.params.name || '';
+    const name = decodeURIComponent(rawName);
+    const currentUserId = req.user?.id?.toString?.();
+
+    const songs = await Song.find({ artist: name, isAvailable: true })
+      .sort({ popularity: -1, playCount: -1 })
+      .select('-audioFeatures');
+
+    const artistDoc = await Artist.findOne({ name }).select('name imageUrl followerCount followers');
+    const latestWithImage = await Song.findOne({ artist: name, isAvailable: true, imageUrl: { $exists: true, $ne: null } }).sort({ releaseDate: -1 });
+
+    const isFollowing = !!(currentUserId && artistDoc && Array.isArray(artistDoc.followers) && artistDoc.followers.some(id => id.toString() === currentUserId));
+
+    const profile = {
+      name,
+      imageUrl: artistDoc?.imageUrl || latestWithImage?.imageUrl || latestWithImage?.largeImageUrl || null,
+      followerCount: artistDoc?.followerCount || 0,
+      isFollowing,
+      songCount: songs.length,
+    };
+
+    res.json({ artist: profile, songs });
+  } catch (error) {
+    console.error('Error fetching artist profile:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
 // ===== PLAYLIST ROUTES =====
 
 // Get user's playlists
