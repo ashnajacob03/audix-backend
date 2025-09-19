@@ -470,7 +470,7 @@ router.get('/artists', [optionalAuth,
 
     // Try to enrich with stored artist images if present
     const names = artistsAgg.map(a => a.name);
-    const artistDocs = await Artist.find({ name: { $in: names } }).select('name imageUrl followerCount');
+    const artistDocs = await Artist.find({ name: { $in: names } }).select('name imageUrl followerCount followers');
     const nameToDoc = new Map(artistDocs.map(doc => [doc.name, doc]));
 
     const currentUserId = req.user?.id?.toString?.();
