@@ -240,6 +240,102 @@ router.get('/songs/:id/stream', async (req, res) => {
   }
 });
 
+// Premium-only: Download full song audio (no Range; force attachment)
+router.get('/songs/:id/download', auth, async (req, res) => {
+  try {
+    // Verify user is premium (or equivalent) and not expired
+    const user = await User.findById(req.user.id).select('accountType subscriptionExpires');
+    const now = new Date();
+    const isPremiumType = user && user.accountType && user.accountType !== 'free';
+    const isActiveSubscription = !user?.subscriptionExpires || (user.subscriptionExpires && user.subscriptionExpires > now);
+    if (!isPremiumType || !isActiveSubscription) {
+      return res.status(403).json({
+        success: false,
+        code: 'PREMIUM_REQUIRED',
+        message: 'Downloading songs is available for premium members only.'
+      });
+    }
+
+    const song = await Song.findById(req.params.id);
+    if (!song) {
+      return res.status(404).json({ message: 'Song not found' });
+    }
+
+    // Prefer direct audio URL if present
+    const songObj = song.toObject({ getters: false, virtuals: false });
+    const directAudioUrl = songObj.audioUrl || songObj.streamUrl;
+
+    const filenameSafe = `${(song.title || 'track').replace(/[^a-z0-9_\-]+/gi, '_')}-${(song.artist || 'artist').replace(/[^a-z0-9_\-]+/gi, '_')}.mp3`;
+
+    const proxyDownload = async (url) => {
+      const upstream = await axios.get(url, {
+        responseType: 'stream',
+        headers: {
+          'User-Agent': req.headers['user-agent'] || 'Audix/1.0',
+          'Accept': '*/*'
+        },
+        validateStatus: (status) => status >= 200 && status < 400
+      });
+
+      res.status(upstream.status);
+      // Set attachment headers
+      res.setHeader('Content-Disposition', `attachment; filename="${filenameSafe}"`);
+      if (upstream.headers['content-type']) res.setHeader('Content-Type', upstream.headers['content-type']);
+      if (upstream.headers['content-length']) res.setHeader('Content-Length', upstream.headers['content-length']);
+      if (upstream.headers['cache-control']) res.setHeader('Cache-Control', upstream.headers['cache-control']);
+
+      upstream.data.pipe(res);
+    };
+
+    if (directAudioUrl && typeof directAudioUrl === 'string') {
+      await proxyDownload(directAudioUrl);
+      return;
+    }
+
+    // Try resolver for full track
+    const resolverUrl = process.env.FULL_TRACK_RESOLVER_URL;
+    if (resolverUrl) {
+      try {
+        const headers = {};
+        if (process.env.FULL_TRACK_RESOLVER_TOKEN) {
+          headers['Authorization'] = `Bearer ${process.env.FULL_TRACK_RESOLVER_TOKEN}`;
+        }
+        const resolveResp = await axios.get(resolverUrl, {
+          params: {
+            title: song.title,
+            artist: song.artist,
+            album: song.album,
+            spotifyId: song.spotifyId,
+          },
+          headers
+        });
+        const resolvedAudio = resolveResp?.data?.audioUrl || resolveResp?.data?.streamUrl;
+        if (resolvedAudio) {
+          await proxyDownload(resolvedAudio);
+          return;
+        }
+      } catch (resolverErr) {
+        console.error('Full track resolver (download) failed:', resolverErr.message);
+      }
+    }
+
+    // As a last resort, if only a preview exists, allow downloading that preview for premium
+    if (song.previewUrl) {
+      try {
+        await proxyDownload(song.previewUrl);
+        return;
+      } catch (previewErr) {
+        console.error('Preview proxy (download) failed:', previewErr.message);
+      }
+    }
+
+    return res.status(404).json({ message: 'No downloadable source available for this song' });
+  } catch (error) {
+    console.error('Error handling song download:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
 // Search songs with external API integration
 router.get('/search', [
   query('q').notEmpty().withMessage('Search query is required'),
