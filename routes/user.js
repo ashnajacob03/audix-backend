@@ -5,6 +5,7 @@ const Artist = require('../models/Artist');
 const { auth } = require('../middleware/auth');
 const expressValidator = require('express-validator');
 const { body: bodyValidator, validationResult: validationResultValidator } = expressValidator;
+const speakeasy = require('speakeasy');
 
 const router = express.Router();
 
@@ -1181,12 +1182,54 @@ router.put('/subscription', [
       return res.status(404).json({ success: false, message: 'User not found' });
     }
 
-    const { accountType, subscriptionExpires } = req.body;
+    const { accountType, subscriptionExpires, plan, amount, currency, paymentId } = req.body;
     user.accountType = accountType;
+
+    // If client explicitly sends a subscriptionExpires, respect it; otherwise derive from plan on premium upgrades
     if (subscriptionExpires !== undefined) {
       user.subscriptionExpires = subscriptionExpires ? new Date(subscriptionExpires) : null;
+    } else if (accountType === 'premium' && (plan === 'monthly' || plan === 'yearly')) {
+      const now = new Date();
+      const derivedEnd = new Date(now);
+      if (plan === 'yearly') {
+        derivedEnd.setFullYear(derivedEnd.getFullYear() + 1);
+      } else {
+        derivedEnd.setMonth(derivedEnd.getMonth() + 1);
+      }
+      user.subscriptionExpires = derivedEnd;
+    } else if (accountType === 'free') {
+      user.subscriptionExpires = null;
     }
+
     await user.save();
+
+    // Create invoice when upgrading to premium and amount provided
+    if (accountType === 'premium' && typeof amount === 'number' && amount > 0) {
+      try {
+        const Invoice = require('../models/Invoice');
+        // Derive billing period from plan
+        const now = new Date();
+        const periodStart = now;
+        const periodEnd = user.subscriptionExpires || (() => {
+          const tmp = new Date(now);
+          if (plan === 'yearly') tmp.setFullYear(tmp.getFullYear() + 1); else tmp.setMonth(tmp.getMonth() + 1);
+          return tmp;
+        })();
+        await Invoice.create({
+          user: user._id,
+          plan: plan === 'yearly' ? 'yearly' : 'monthly',
+          amount,
+          currency: currency || 'INR',
+          paymentId: paymentId || null,
+          periodStart,
+          periodEnd,
+          status: 'paid',
+          meta: { source: 'subscription_update' }
+        });
+      } catch (e) {
+        console.error('Failed to create invoice:', e);
+      }
+    }
 
     return res.json({
       success: true,

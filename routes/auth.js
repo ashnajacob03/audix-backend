@@ -254,6 +254,9 @@ const validateResetPassword = [
 
 ];
 
+// 2FA helpers
+const speakeasy = require('speakeasy');
+
 
 
 // Temporary in-memory store for pending signups (for demo; use Redis for production)
@@ -460,7 +463,7 @@ router.post('/login', validateLogin, async (req, res) => {
 
 
 
-    const { email, password, rememberMe } = req.body;
+    const { email, password, rememberMe, twoFactorToken } = req.body;
 
 
 
@@ -539,6 +542,17 @@ router.post('/login', validateLogin, async (req, res) => {
     }
 
 
+
+    // If 2FA enabled, require token
+    if (user.twoFactorEnabled) {
+      if (!twoFactorToken) {
+        return res.status(401).json({ success: false, message: 'Two-factor authentication code required', code: '2FA_REQUIRED' });
+      }
+      const verified = speakeasy.totp.verify({ secret: user.twoFactorSecret || '', encoding: 'base32', token: String(twoFactorToken), window: 1 });
+      if (!verified) {
+        return res.status(401).json({ success: false, message: 'Invalid two-factor authentication code', code: '2FA_INVALID' });
+      }
+    }
 
     // Generate tokens
 

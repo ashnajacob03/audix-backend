@@ -103,6 +103,16 @@ const songSchema = new mongoose.Schema({
     type: Number,
     default: 0
   },
+  likeCount: {
+    type: Number,
+    default: 0,
+    min: 0
+  },
+  dislikeCount: {
+    type: Number,
+    default: 0,
+    min: 0
+  },
 
   // External URLs
   externalUrls: {

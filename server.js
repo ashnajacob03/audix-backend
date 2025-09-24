@@ -14,6 +14,8 @@ const { Server } = require('socket.io');
 
 const jwt = require('jsonwebtoken');
 
+const path = require('path');
+
 require('dotenv').config();
 
 
@@ -31,6 +33,7 @@ const messageRoutes = require('./routes/messages');
 const adminRoutes = require('./routes/admin');
 
 const musicRoutes = require('./routes/music');
+const invoiceRoutes = require('./routes/invoices');
 
 
 
@@ -178,7 +181,7 @@ if (process.env.NODE_ENV === 'development') {
 
     windowMs: 1 * 60 * 1000, // 1 minute
 
-    max: 100, // 100 requests per minute
+    max: parseInt(process.env.RATE_LIMIT_MAX_REQUESTS_DEV) || 2000, // relaxed for development
 
     message: {
 
@@ -765,6 +768,10 @@ app.use('/api/messages', messageRoutes);
 app.use('/api/admin', adminRoutes);
 
 app.use('/api/music', musicRoutes);
+app.use('/api/invoices', invoiceRoutes);
+
+// Serve extracted background music files
+app.use('/extracted', express.static(path.join(__dirname, 'public/extracted')));
 
 
 

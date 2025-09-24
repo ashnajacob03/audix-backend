@@ -86,6 +86,17 @@ const auth = async (req, res, next) => {
         });
       }
 
+      // Auto-downgrade if subscription expired
+      try {
+        if (user.accountType !== 'free' && user.subscriptionExpires && new Date(user.subscriptionExpires) <= new Date()) {
+          user.accountType = 'free';
+          user.subscriptionExpires = null;
+          await user.save();
+        }
+      } catch (downgradeErr) {
+        console.error('Auth Middleware: auto-downgrade failed:', downgradeErr?.message);
+      }
+
       // Add user info to request object (normalize id to string to avoid ObjectId vs string mismatches)
       req.user = {
         id: user._id.toString(),

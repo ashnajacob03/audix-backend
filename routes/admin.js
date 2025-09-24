@@ -91,7 +91,7 @@ router.get('/users', [auth, adminAuth], async (req, res) => {
     const search = req.query.search || '';
     const skip = (page - 1) * limit;
 
-    const filter = { isActive: true };
+    const filter = {};
     
     if (search) {
       filter.$or = [
@@ -102,7 +102,7 @@ router.get('/users', [auth, adminAuth], async (req, res) => {
     }
 
     const users = await User.find(filter)
-      .select('firstName lastName email profilePicture accountType createdAt lastLogin isEmailVerified isAdmin')
+      .select('firstName lastName email profilePicture accountType createdAt lastLogin isEmailVerified isAdmin isActive')
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(limit);
@@ -119,7 +119,10 @@ router.get('/users', [auth, adminAuth], async (req, res) => {
       isAdmin: user.isAdmin,
       joinedAt: user.createdAt,
       lastLogin: user.lastLogin,
-      isActive: user.lastLogin && (Date.now() - new Date(user.lastLogin).getTime()) < 7 * 24 * 60 * 60 * 1000
+      // Online activity indicator (last 7 days)
+      isActive: user.lastLogin && (Date.now() - new Date(user.lastLogin).getTime()) < 7 * 24 * 60 * 60 * 1000,
+      // Actual account activation state (soft-deleted if false)
+      isAccountActive: !!user.isActive
     }));
 
     res.json({

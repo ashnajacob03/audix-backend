@@ -7,7 +7,9 @@ const Song = require('../models/Song');
 const Playlist = require('../models/Playlist');
 const Artist = require('../models/Artist');
 const User = require('../models/User');
+const UserSongInteraction = require('../models/UserSongInteraction');
 const musicApiService = require('../services/musicApiService');
+const backgroundExtractionService = require('../services/backgroundExtractionService');
 
 // ===== SONG ROUTES =====
 
@@ -84,6 +86,150 @@ router.get('/songs/:id', async (req, res) => {
   }
 });
 
+// Simple in-memory cache for lyrics to reduce external calls
+const lyricsCache = new Map(); // key: songId -> { lyrics, ts }
+
+// Get lyrics for a song by ID
+router.get('/songs/:id/lyrics', async (req, res) => {
+  try {
+    const cacheHit = lyricsCache.get(req.params.id);
+    if (cacheHit && cacheHit.lyrics && (Date.now() - cacheHit.ts < 1000 * 60 * 60 * 24)) {
+      return res.json({ lyrics: cacheHit.lyrics, cached: true });
+    }
+
+    const song = await Song.findById(req.params.id);
+    if (!song) {
+      return res.status(404).json({ message: 'Song not found' });
+    }
+
+    const rawTitle = (song.title || '').trim();
+    const rawArtist = (song.artist || song.albumArtist || '').trim();
+    const normalize = (s) => s
+      .replace(/\s*\([^)]*\)\s*/g, ' ') // remove (...) parts
+      .replace(/\s*-\s*[^-]*$/g, ' ') // remove trailing - Remix/Live/etc
+      .replace(/\s*feat\.?\s+[^,]+/ig, ' ') // remove feat. in title
+      .replace(/\s*\[[^\]]*\]\s*/g, ' ') // remove [Live] parts
+      .replace(/\s{2,}/g, ' ') // collapse spaces
+      .trim();
+    const cleanTitle = normalize(rawTitle);
+    const cleanArtist = normalize(rawArtist.replace(/\s*&\s*/g, ' & ')).replace(/,.*$/, '').replace(/\s*feat\..*$/i, '').trim();
+    if (!cleanTitle || !cleanArtist) {
+      return res.status(404).json({ message: 'Insufficient metadata for lyrics' });
+    }
+
+    // Build candidate queries
+    const candidates = [];
+    const pushUnique = (t, a) => {
+      const key = `${t}__${a}`.toLowerCase();
+      if (!candidates.some(c => c.key === key)) candidates.push({ key, title: t, artist: a });
+    };
+    pushUnique(cleanTitle, cleanArtist);
+    if (cleanTitle !== rawTitle) pushUnique(rawTitle, cleanArtist);
+    if (cleanArtist !== rawArtist) pushUnique(cleanTitle, rawArtist);
+    // Title without anything after '-' and without parentheses already handled by normalize
+    // Try also removing ampersands
+    pushUnique(cleanTitle.replace(/ & /g, ' and '), cleanArtist);
+
+    // Try multiple free lyrics providers in order (each attempt receives a candidate)
+    const providerCalls = [
+      async () => {
+        // Lyrist API (community project)
+        for (const c of candidates) {
+          const url = `https://lyrist.vercel.app/api/${encodeURIComponent(c.artist)}/${encodeURIComponent(c.title)}`;
+          const resp = await axios.get(url, { validateStatus: s => s >= 200 && s < 500 });
+          const text = resp?.data?.lyrics || resp?.data?.lyric || resp?.data?.result || null;
+          if (text && typeof text === 'string') return text;
+        }
+        return null;
+      },
+      async () => {
+        // lyrics.ovh simple API
+        for (const c of candidates) {
+          const url = `https://api.lyrics.ovh/v1/${encodeURIComponent(c.artist)}/${encodeURIComponent(c.title)}`;
+          const resp = await axios.get(url, { validateStatus: s => s >= 200 && s < 500 });
+          const text = resp?.data?.lyrics || null;
+          if (text && typeof text === 'string') return text;
+        }
+        return null;
+      },
+      async () => {
+        // some-random-api lyrics by title
+        // Try "artist - title" and plain title
+        for (const c of candidates) {
+          const queries = [
+            `${c.artist} - ${c.title}`,
+            c.title,
+          ];
+          for (const q of queries) {
+            const url = `https://some-random-api.com/lyrics?title=${encodeURIComponent(q)}`;
+            const resp = await axios.get(url, { validateStatus: s => s >= 200 && s < 500 });
+            const text = resp?.data?.lyrics || null;
+            if (text && typeof text === 'string') return text;
+          }
+        }
+        return null;
+      },
+      async () => {
+        // ChartLyrics XML API
+        const xml2txt = (xml) => {
+          if (!xml) return null;
+          const match = xml.match(/<Lyric>([\s\S]*?)<\/Lyric>/i);
+          if (match && match[1]) {
+            return match[1]
+              .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, '$1')
+              .replace(/\r\n/g, '\n')
+              .trim();
+          }
+          return null;
+        };
+        for (const c of candidates) {
+          const url = `https://api.chartlyrics.com/apiv1.asmx/SearchLyricDirect?artist=${encodeURIComponent(c.artist)}&song=${encodeURIComponent(c.title)}`;
+          const resp = await axios.get(url, { responseType: 'text', validateStatus: s => s >= 200 && s < 500 });
+          const text = xml2txt(resp?.data);
+          if (text && typeof text === 'string' && text.length > 0) return text;
+        }
+        return null;
+      },
+    ];
+
+    let lyrics = null;
+    for (const run of providerCalls) {
+      try {
+        lyrics = await run();
+        if (lyrics) break;
+      } catch (e) {
+        // continue to next provider
+      }
+    }
+
+    if (!lyrics) {
+      return res.status(404).json({ message: 'Lyrics not found' });
+    }
+
+    // Normalize newlines and trim
+    lyrics = String(lyrics)
+      .replace(/\r\n/g, '\n')
+      .replace(/\r/g, '\n')
+      .replace(/\n{3,}/g, '\n\n') // collapse overly large gaps
+      .trim();
+
+    lyricsCache.set(req.params.id, { lyrics, ts: Date.now() });
+    return res.json({ lyrics });
+  } catch (error) {
+    console.error('Error fetching lyrics:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// Handle CORS preflight for audio streaming
+router.options('/songs/:id/stream', (req, res) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Range, Content-Range, Content-Length, Content-Type, Authorization');
+  res.setHeader('Access-Control-Expose-Headers', 'Content-Range, Content-Length, Accept-Ranges');
+  res.status(200).end();
+});
+
 // Stream song audio
 router.get('/songs/:id/stream', async (req, res) => {
   try {
@@ -118,6 +264,13 @@ router.get('/songs/:id/stream', async (req, res) => {
 
       // Mirror status and critical headers for media playback
       res.status(upstream.status);
+      
+      // Set CORS headers for audio streaming
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
+      res.setHeader('Access-Control-Allow-Headers', 'Range, Content-Range, Content-Length, Content-Type');
+      res.setHeader('Access-Control-Expose-Headers', 'Content-Range, Content-Length, Accept-Ranges');
+      
       const passthroughHeaders = [
         'content-type',
         'content-length',
@@ -164,6 +317,13 @@ router.get('/songs/:id/stream', async (req, res) => {
           });
 
           res.status(upstream.status);
+          
+          // Set CORS headers for audio streaming
+          res.setHeader('Access-Control-Allow-Origin', '*');
+          res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
+          res.setHeader('Access-Control-Allow-Headers', 'Range, Content-Range, Content-Length, Content-Type');
+          res.setHeader('Access-Control-Expose-Headers', 'Content-Range, Content-Length, Accept-Ranges');
+          
           const passthroughHeaders = [
             'content-type',
             'content-length',
@@ -200,6 +360,13 @@ router.get('/songs/:id/stream', async (req, res) => {
         });
 
         res.status(upstream.status);
+        
+        // Set CORS headers for audio streaming
+        res.setHeader('Access-Control-Allow-Origin', '*');
+        res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
+        res.setHeader('Access-Control-Allow-Headers', 'Range, Content-Range, Content-Length, Content-Type');
+        res.setHeader('Access-Control-Expose-Headers', 'Content-Range, Content-Length, Accept-Ranges');
+        
         const passthroughHeaders = [
           'content-type',
           'content-length',
@@ -247,7 +414,7 @@ router.get('/songs/:id/download', auth, async (req, res) => {
     const user = await User.findById(req.user.id).select('accountType subscriptionExpires');
     const now = new Date();
     const isPremiumType = user && user.accountType && user.accountType !== 'free';
-    const isActiveSubscription = !user?.subscriptionExpires || (user.subscriptionExpires && user.subscriptionExpires > now);
+    const isActiveSubscription = user?.subscriptionExpires ? user.subscriptionExpires > now : isPremiumType; // if no expires set but premium, allow
     if (!isPremiumType || !isActiveSubscription) {
       return res.status(403).json({
         success: false,
@@ -280,9 +447,14 @@ router.get('/songs/:id/download', auth, async (req, res) => {
       res.status(upstream.status);
       // Set attachment headers
       res.setHeader('Content-Disposition', `attachment; filename="${filenameSafe}"`);
-      if (upstream.headers['content-type']) res.setHeader('Content-Type', upstream.headers['content-type']);
+      res.setHeader('Content-Type', upstream.headers['content-type'] || 'audio/mpeg');
       if (upstream.headers['content-length']) res.setHeader('Content-Length', upstream.headers['content-length']);
       if (upstream.headers['cache-control']) res.setHeader('Cache-Control', upstream.headers['cache-control']);
+      
+      // Set CORS headers for downloads
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
+      res.setHeader('Access-Control-Allow-Headers', 'Range, Content-Range, Content-Length, Content-Type');
 
       upstream.data.pipe(res);
     };
@@ -893,7 +1065,7 @@ router.post('/playlists/:id/follow', auth, async (req, res) => {
 
 // ===== USER MUSIC ACTIONS =====
 
-// Like/unlike song
+// Like/dislike song
 router.post('/songs/:id/like', auth, async (req, res) => {
   try {
     const song = await Song.findById(req.params.id);
@@ -901,22 +1073,219 @@ router.post('/songs/:id/like', auth, async (req, res) => {
       return res.status(404).json({ message: 'Song not found' });
     }
 
-    const user = await User.findById(req.user.id);
-    const isLiked = user.likedSongs.includes(song._id);
+    const userId = req.user.id;
+    const songId = song._id;
 
-    if (isLiked) {
-      user.likedSongs = user.likedSongs.filter(id => id.toString() !== song._id.toString());
+    // Find existing interaction
+    let interaction = await UserSongInteraction.findOne({ user: userId, song: songId });
+
+    if (!interaction) {
+      // Create new interaction
+      interaction = new UserSongInteraction({
+        user: userId,
+        song: songId,
+        interaction: 'like'
+      });
+      await interaction.save();
+      
+      // Update song like count
+      song.likeCount += 1;
+      await song.save();
+      
+      // Update user's liked songs array (for backward compatibility)
+      const user = await User.findById(userId);
+      if (!user.likedSongs.includes(songId)) {
+        user.likedSongs.push(songId);
+        await user.save();
+      }
+      
+      res.json({ 
+        message: 'Song liked',
+        interaction: 'like',
+        likeCount: song.likeCount,
+        dislikeCount: song.dislikeCount
+      });
+    } else if (interaction.interaction === 'like') {
+      // Remove like
+      await UserSongInteraction.deleteOne({ _id: interaction._id });
+      
+      // Update song like count
+      song.likeCount = Math.max(0, song.likeCount - 1);
+      await song.save();
+      
+      // Update user's liked songs array
+      const user = await User.findById(userId);
+      user.likedSongs = user.likedSongs.filter(id => id.toString() !== songId.toString());
+      await user.save();
+      
+      res.json({ 
+        message: 'Song unliked',
+        interaction: 'neutral',
+        likeCount: song.likeCount,
+        dislikeCount: song.dislikeCount
+      });
+    } else if (interaction.interaction === 'dislike') {
+      // Change from dislike to like
+      interaction.interaction = 'like';
+      await interaction.save();
+      
+      // Update song counts
+      song.dislikeCount = Math.max(0, song.dislikeCount - 1);
+      song.likeCount += 1;
+      await song.save();
+      
+      // Update user's liked songs array
+      const user = await User.findById(userId);
+      if (!user.likedSongs.includes(songId)) {
+        user.likedSongs.push(songId);
+        await user.save();
+      }
+      
+      res.json({ 
+        message: 'Song liked',
+        interaction: 'like',
+        likeCount: song.likeCount,
+        dislikeCount: song.dislikeCount
+      });
     } else {
-      user.likedSongs.push(song._id);
+      // Change from neutral to like
+      interaction.interaction = 'like';
+      await interaction.save();
+      
+      // Update song like count
+      song.likeCount += 1;
+      await song.save();
+      
+      // Update user's liked songs array
+      const user = await User.findById(userId);
+      if (!user.likedSongs.includes(songId)) {
+        user.likedSongs.push(songId);
+        await user.save();
+      }
+      
+      res.json({ 
+        message: 'Song liked',
+        interaction: 'like',
+        likeCount: song.likeCount,
+        dislikeCount: song.dislikeCount
+      });
     }
-
-    await user.save();
-    res.json({ 
-      message: isLiked ? 'Song unliked' : 'Song liked',
-      isLiked: !isLiked
-    });
   } catch (error) {
     console.error('Error liking song:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// Dislike song
+router.post('/songs/:id/dislike', auth, async (req, res) => {
+  try {
+    const song = await Song.findById(req.params.id);
+    if (!song) {
+      return res.status(404).json({ message: 'Song not found' });
+    }
+
+    const userId = req.user.id;
+    const songId = song._id;
+
+    // Find existing interaction
+    let interaction = await UserSongInteraction.findOne({ user: userId, song: songId });
+
+    if (!interaction) {
+      // Create new interaction
+      interaction = new UserSongInteraction({
+        user: userId,
+        song: songId,
+        interaction: 'dislike'
+      });
+      await interaction.save();
+      
+      // Update song dislike count
+      song.dislikeCount += 1;
+      await song.save();
+      
+      res.json({ 
+        message: 'Song disliked',
+        interaction: 'dislike',
+        likeCount: song.likeCount,
+        dislikeCount: song.dislikeCount
+      });
+    } else if (interaction.interaction === 'dislike') {
+      // Remove dislike
+      await UserSongInteraction.deleteOne({ _id: interaction._id });
+      
+      // Update song dislike count
+      song.dislikeCount = Math.max(0, song.dislikeCount - 1);
+      await song.save();
+      
+      res.json({ 
+        message: 'Song undisliked',
+        interaction: 'neutral',
+        likeCount: song.likeCount,
+        dislikeCount: song.dislikeCount
+      });
+    } else if (interaction.interaction === 'like') {
+      // Change from like to dislike
+      interaction.interaction = 'dislike';
+      await interaction.save();
+      
+      // Update song counts
+      song.likeCount = Math.max(0, song.likeCount - 1);
+      song.dislikeCount += 1;
+      await song.save();
+      
+      // Update user's liked songs array
+      const user = await User.findById(userId);
+      user.likedSongs = user.likedSongs.filter(id => id.toString() !== songId.toString());
+      await user.save();
+      
+      res.json({ 
+        message: 'Song disliked',
+        interaction: 'dislike',
+        likeCount: song.likeCount,
+        dislikeCount: song.dislikeCount
+      });
+    } else {
+      // Change from neutral to dislike
+      interaction.interaction = 'dislike';
+      await interaction.save();
+      
+      // Update song dislike count
+      song.dislikeCount += 1;
+      await song.save();
+      
+      res.json({ 
+        message: 'Song disliked',
+        interaction: 'dislike',
+        likeCount: song.likeCount,
+        dislikeCount: song.dislikeCount
+      });
+    }
+  } catch (error) {
+    console.error('Error disliking song:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// Get user's interaction with a song
+router.get('/songs/:id/interaction', auth, async (req, res) => {
+  try {
+    const song = await Song.findById(req.params.id);
+    if (!song) {
+      return res.status(404).json({ message: 'Song not found' });
+    }
+
+    const interaction = await UserSongInteraction.findOne({ 
+      user: req.user.id, 
+      song: req.params.id 
+    });
+
+    res.json({
+      interaction: interaction ? interaction.interaction : 'neutral',
+      likeCount: song.likeCount,
+      dislikeCount: song.dislikeCount
+    });
+  } catch (error) {
+    console.error('Error getting song interaction:', error);
     res.status(500).json({ message: 'Server error' });
   }
 });
@@ -940,6 +1309,175 @@ router.get('/recent', auth, async (req, res) => {
     res.json([]);
   } catch (error) {
     console.error('Error fetching recent songs:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// ===== BACKGROUND EXTRACTION ROUTES =====
+
+// Extract background music from a song
+router.post('/songs/:id/extract-background', auth, async (req, res) => {
+  try {
+    const song = await Song.findById(req.params.id);
+    if (!song) {
+      return res.status(404).json({ message: 'Song not found' });
+    }
+
+    // Check if background already exists
+    const status = backgroundExtractionService.getExtractionStatus(song._id);
+    if (status.exists) {
+      return res.json({
+        success: true,
+        message: 'Background music already extracted',
+        publicUrl: status.publicUrl,
+        alreadyExists: true
+      });
+    }
+
+    // Always use our own stream proxy so every song uses the same playable source
+    // This avoids CORS/headers/format differences between providers
+    const sourceUrl = `${req.protocol}://${req.get('host')}/api/music/songs/${song._id}/stream`;
+    console.log('Using internal stream endpoint for extraction:', sourceUrl);
+
+    // Start background extraction process
+    const result = await backgroundExtractionService.extractBackground(
+      song._id,
+      sourceUrl,
+      (progress, message) => {
+        // In a real implementation, you'd use WebSockets or Server-Sent Events
+        // to send progress updates to the client
+        console.log(`Progress: ${progress}% - ${message}`);
+      }
+    );
+
+    if (result.success) {
+      res.json({
+        success: true,
+        message: result.message,
+        publicUrl: result.publicUrl
+      });
+    } else {
+      res.status(500).json({
+        success: false,
+        message: result.message,
+        error: result.error
+      });
+    }
+
+  } catch (error) {
+    console.error('Error extracting background:', error);
+    res.status(500).json({ 
+      success: false,
+      message: 'Failed to extract background music',
+      error: error.message 
+    });
+  }
+});
+
+// Get background extraction status
+router.get('/songs/:id/background-status', auth, async (req, res) => {
+  try {
+    const song = await Song.findById(req.params.id);
+    if (!song) {
+      return res.status(404).json({ message: 'Song not found' });
+    }
+
+    const status = backgroundExtractionService.getExtractionStatus(song._id);
+    res.json({
+      exists: status.exists,
+      publicUrl: status.publicUrl,
+      size: status.size,
+      created: status.created
+    });
+
+  } catch (error) {
+    console.error('Error checking background status:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// Stream extracted background music
+router.get('/songs/:id/background-stream', auth, async (req, res) => {
+  try {
+    const song = await Song.findById(req.params.id);
+    if (!song) {
+      return res.status(404).json({ message: 'Song not found' });
+    }
+
+    const status = backgroundExtractionService.getExtractionStatus(song._id);
+    if (!status.exists) {
+      return res.status(404).json({ message: 'Background music not extracted yet' });
+    }
+
+    const backgroundPath = require('path').join(__dirname, '../public/extracted', `${song._id}_background.mp3`);
+    
+    // Check if file exists
+    if (!require('fs').existsSync(backgroundPath)) {
+      return res.status(404).json({ message: 'Background music file not found' });
+    }
+    
+    // Get file stats for proper headers
+    const fs = require('fs');
+    const stats = fs.statSync(backgroundPath);
+    const fileSize = stats.size;
+    const range = req.headers.range;
+    
+    if (range) {
+      // Handle range requests for streaming
+      const parts = range.replace(/bytes=/, "").split("-");
+      const start = parseInt(parts[0], 10);
+      const end = parts[1] ? parseInt(parts[1], 10) : fileSize - 1;
+      const chunksize = (end - start) + 1;
+      
+      res.status(206);
+      res.setHeader('Content-Range', `bytes ${start}-${end}/${fileSize}`);
+      res.setHeader('Accept-Ranges', 'bytes');
+      res.setHeader('Content-Length', chunksize);
+      res.setHeader('Content-Type', 'audio/mpeg');
+      
+      const stream = fs.createReadStream(backgroundPath, { start, end });
+      stream.pipe(res);
+    } else {
+      // Stream the entire file
+      res.setHeader('Content-Type', 'audio/mpeg');
+      res.setHeader('Content-Length', fileSize);
+      res.setHeader('Accept-Ranges', 'bytes');
+      res.setHeader('Content-Disposition', `inline; filename="${song.title}_background.mp3"`);
+      
+      // Set CORS headers
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
+      res.setHeader('Access-Control-Allow-Headers', 'Range, Content-Range, Content-Length, Content-Type');
+      res.setHeader('Access-Control-Expose-Headers', 'Content-Range, Content-Length, Accept-Ranges');
+      
+      const stream = fs.createReadStream(backgroundPath);
+      stream.pipe(res);
+    }
+
+  } catch (error) {
+    console.error('Error streaming background music:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// Delete extracted background music
+router.delete('/songs/:id/background', auth, async (req, res) => {
+  try {
+    const song = await Song.findById(req.params.id);
+    if (!song) {
+      return res.status(404).json({ message: 'Song not found' });
+    }
+
+    const deleted = backgroundExtractionService.deleteExtractedBackground(song._id);
+    
+    if (deleted) {
+      res.json({ message: 'Background music deleted successfully' });
+    } else {
+      res.status(404).json({ message: 'Background music not found' });
+    }
+
+  } catch (error) {
+    console.error('Error deleting background music:', error);
     res.status(500).json({ message: 'Server error' });
   }
 });
