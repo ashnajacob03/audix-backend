@@ -3,6 +3,7 @@ const { body, validationResult } = require('express-validator');
 const User = require('../models/User');
 const { auth } = require('../middleware/auth');
 const Notification = require('../models/Notification');
+const ArtistVerification = require('../models/ArtistVerification');
 
 const router = express.Router();
 
@@ -143,6 +144,90 @@ router.get('/users', [auth, adminAuth], async (req, res) => {
       success: false,
       message: 'Internal server error'
     });
+  }
+});
+
+// ===== Artist Verification Admin =====
+// List pending verifications
+router.get('/artist-verifications', [auth, adminAuth], async (req, res) => {
+  try {
+    const items = await ArtistVerification.find({ status: 'pending' })
+      .populate('user', 'firstName lastName email');
+    res.json({ success: true, data: { items } });
+  } catch (error) {
+    console.error('List artist verifications error:', error);
+    res.status(500).json({ success: false, message: 'Internal server error' });
+  }
+});
+
+// Approve verification
+router.post('/artist-verifications/:id/approve', [auth, adminAuth], async (req, res) => {
+  try {
+    const item = await ArtistVerification.findById(req.params.id);
+    if (!item || item.status !== 'pending') {
+      return res.status(404).json({ success: false, message: 'Request not found' });
+    }
+    item.status = 'approved';
+    item.reviewedAt = new Date();
+    item.reviewedBy = req.user.id;
+    await item.save();
+
+    // Mark user as artist
+    const user = await User.findById(item.user);
+    if (user) {
+      user.isArtist = true;
+      await user.save();
+      // Notify user and send email
+      await Notification.create({
+        recipient: user._id,
+        sender: req.user.id,
+        type: 'system',
+        title: 'You are now an Artist',
+        message: 'Your artist verification was approved. Enjoy your artist features!'
+      });
+      try {
+        const { sendEmail } = require('../utils/sendEmail');
+        await sendEmail({
+          to: user.email,
+          subject: 'Audix — You are now an Artist 🎉',
+          text: 'Your artist verification was approved. Enjoy your artist features on Audix!',
+          html: '<p>Your artist verification was approved. Enjoy your artist features on Audix!</p>'
+        });
+      } catch (e) { console.error('Email send failed:', e.message); }
+    }
+
+    res.json({ success: true, message: 'Artist approved' });
+  } catch (error) {
+    console.error('Approve artist error:', error);
+    res.status(500).json({ success: false, message: 'Internal server error' });
+  }
+});
+
+// Reject verification
+router.post('/artist-verifications/:id/reject', [auth, adminAuth], async (req, res) => {
+  try {
+    const item = await ArtistVerification.findById(req.params.id);
+    if (!item || item.status !== 'pending') {
+      return res.status(404).json({ success: false, message: 'Request not found' });
+    }
+    item.status = 'rejected';
+    item.reviewedAt = new Date();
+    item.reviewedBy = req.user.id;
+    item.notes = req.body?.notes || '';
+    await item.save();
+
+    await Notification.create({
+      recipient: item.user,
+      sender: req.user.id,
+      type: 'system',
+      title: 'Artist verification rejected',
+      message: 'Your artist verification was rejected. Please review and resubmit.'
+    });
+
+    res.json({ success: true, message: 'Artist rejected' });
+  } catch (error) {
+    console.error('Reject artist error:', error);
+    res.status(500).json({ success: false, message: 'Internal server error' });
   }
 });
 

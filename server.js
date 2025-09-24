@@ -772,6 +772,7 @@ app.use('/api/invoices', invoiceRoutes);
 
 // Serve extracted background music files
 app.use('/extracted', express.static(path.join(__dirname, 'public/extracted')));
+app.use('/artist-verifications', express.static(path.join(__dirname, 'public/artist-verifications')));
 
 
 

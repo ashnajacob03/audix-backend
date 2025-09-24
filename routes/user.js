@@ -2,6 +2,11 @@ const express = require('express');
 const { body, validationResult } = require('express-validator');
 const User = require('../models/User');
 const Artist = require('../models/Artist');
+const ArtistVerification = require('../models/ArtistVerification');
+const Notification = require('../models/Notification');
+const multer = require('multer');
+const path = require('path');
+const fs = require('fs');
 const { auth } = require('../middleware/auth');
 const expressValidator = require('express-validator');
 const { body: bodyValidator, validationResult: validationResultValidator } = expressValidator;
@@ -157,6 +162,121 @@ router.put('/profile-picture', [
     });
   } catch (error) {
     console.error('Update profile picture error:', error);
+    res.status(500).json({ success: false, message: 'Internal server error' });
+  }
+});
+
+// ===== Artist Verification Submission =====
+// Storage for uploads
+const uploadsRoot = path.join(__dirname, '..', 'public', 'artist-verifications');
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    fs.mkdirSync(uploadsRoot, { recursive: true });
+    cb(null, uploadsRoot);
+  },
+  filename: (req, file, cb) => {
+    const ext = path.extname(file.originalname);
+    const safe = path.basename(file.originalname, ext).replace(/[^a-zA-Z0-9-_]/g, '_');
+    cb(null, `${Date.now()}_${safe}${ext}`);
+  }
+});
+
+// @route   PUT /api/user/artist-status
+// @desc    Toggle artist status for the current user
+// @access  Private
+router.put('/artist-status', auth, async (req, res) => {
+  try {
+    const { isArtist } = req.body || {};
+    if (typeof isArtist !== 'boolean') {
+      return res.status(400).json({ success: false, message: 'isArtist boolean is required' });
+    }
+
+    const user = await User.findById(req.user.id);
+    if (!user) return res.status(404).json({ success: false, message: 'User not found' });
+
+    user.isArtist = isArtist;
+    await user.save();
+
+    await Notification.create({
+      recipient: user._id,
+      sender: req.user.id,
+      type: 'system',
+      title: isArtist ? 'Artist mode enabled' : 'Switched to listener',
+      message: isArtist ? 'You can now access artist features.' : 'You switched back to a normal listener account.'
+    });
+
+    if (!isArtist) {
+      try {
+        const { sendEmail } = require('../utils/sendEmail');
+        await sendEmail({
+          to: user.email,
+          subject: 'Audix — You switched to Listener',
+          text: 'You have switched back to a normal listener account on Audix. You can re-apply for artist anytime.',
+          html: '<p>You have switched back to a normal listener account on Audix. You can re-apply for artist anytime.</p>'
+        });
+      } catch (e) { console.error('Email send failed:', e.message); }
+    }
+
+    res.json({ success: true, message: 'Artist status updated', data: { isArtist: user.isArtist } });
+  } catch (error) {
+    console.error('Update artist status error:', error);
+    res.status(500).json({ success: false, message: 'Internal server error' });
+  }
+});
+const upload = multer({ storage });
+
+// @route   POST /api/user/artist-verification
+// @desc    Submit artist verification request with files
+// @access  Private
+router.post('/artist-verification', auth, upload.fields([
+  { name: 'idFile', maxCount: 1 },
+  { name: 'evidence', maxCount: 10 }
+]), async (req, res) => {
+  try {
+    const { displayName, socialLink, portfolioLink } = req.body;
+    if (!displayName) {
+      return res.status(400).json({ success: false, message: 'displayName is required' });
+    }
+
+    // Save file URLs (served from /public)
+    const basePublic = '/artist-verifications';
+    const idFileUrl = req.files?.idFile?.[0] ? `${basePublic}/${req.files.idFile[0].filename}` : '';
+    const evidenceUrls = (req.files?.evidence || []).map(f => `${basePublic}/${f.filename}`);
+
+    // Create or update pending request for this user
+    const existing = await ArtistVerification.findOne({ user: req.user.id, status: 'pending' });
+    if (existing) {
+      existing.displayName = displayName;
+      existing.socialLink = socialLink;
+      existing.portfolioLink = portfolioLink;
+      if (idFileUrl) existing.idFileUrl = idFileUrl;
+      if (evidenceUrls.length) existing.evidenceUrls = evidenceUrls;
+      await existing.save();
+    } else {
+      await ArtistVerification.create({
+        user: req.user.id,
+        displayName,
+        socialLink,
+        portfolioLink,
+        idFileUrl,
+        evidenceUrls,
+        status: 'pending'
+      });
+    }
+
+    // Create a notification for admins (use system notification to admins)
+    // For simplicity, notify the submitting user that it's pending
+    await Notification.create({
+      recipient: req.user.id,
+      sender: req.user.id,
+      type: 'system',
+      title: 'Artist verification submitted',
+      message: 'We are reviewing your submission. You\'ll be notified once approved.'
+    });
+
+    res.json({ success: true, message: 'Verification submitted' });
+  } catch (error) {
+    console.error('Artist verification submit error:', error);
     res.status(500).json({ success: false, message: 'Internal server error' });
   }
 });
@@ -673,6 +793,7 @@ router.get('/profile', auth, async (req, res) => {
           picture: user.profilePicture,
           isEmailVerified: user.isEmailVerified,
           accountType: user.accountType,
+        isArtist: user.isArtist,
           isAdmin: user.isAdmin,
           preferences: user.preferences,
           dateOfBirth: user.dateOfBirth,

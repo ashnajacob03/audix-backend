@@ -147,6 +147,10 @@ const userSchema = new mongoose.Schema({
     type: Boolean,
     default: false
   },
+  isArtist: {
+    type: Boolean,
+    default: false
+  },
   subscriptionExpires: {
     type: Date,
     default: null
