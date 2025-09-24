@@ -1207,6 +1207,8 @@ router.put('/subscription', [
     if (accountType === 'premium' && typeof amount === 'number' && amount > 0) {
       try {
         const Invoice = require('../models/Invoice');
+        const { sendEmail } = require('../utils/sendEmail');
+        const { generateInvoicePdfBuffer } = require('../utils/invoicePdf');
         // Derive billing period from plan
         const now = new Date();
         const periodStart = now;
@@ -1215,7 +1217,7 @@ router.put('/subscription', [
           if (plan === 'yearly') tmp.setFullYear(tmp.getFullYear() + 1); else tmp.setMonth(tmp.getMonth() + 1);
           return tmp;
         })();
-        await Invoice.create({
+        const invoice = await Invoice.create({
           user: user._id,
           plan: plan === 'yearly' ? 'yearly' : 'monthly',
           amount,
@@ -1226,6 +1228,39 @@ router.put('/subscription', [
           status: 'paid',
           meta: { source: 'subscription_update' }
         });
+
+        // Generate PDF and email it to the user (non-blocking but awaited here for reliability)
+        try {
+          const pdfBuffer = await generateInvoicePdfBuffer(invoice, user.email);
+          const amountFormatted = new Intl.NumberFormat('en-IN', { maximumFractionDigits: 0 }).format(Number(invoice.amount || 0));
+          const baseUrl = process.env.BACKEND_PUBLIC_URL || process.env.SERVER_URL || '';
+          const downloadUrl = baseUrl ? `${baseUrl.replace(/\/$/, '')}/api/invoices/${invoice._id}/pdf` : '';
+
+          await sendEmail({
+            to: user.email,
+            template: 'invoicePaid',
+            data: {
+              name: user.fullName || user.firstName,
+              invoiceId: String(invoice._id),
+              plan: invoice.plan,
+              amount: String(invoice.amount),
+              amountFormatted,
+              currency: invoice.currency,
+              periodStart: periodStart.toLocaleDateString(),
+              periodEnd: periodEnd.toLocaleDateString(),
+              downloadUrl
+            },
+            attachments: [
+              {
+                filename: `invoice-${invoice._id}.pdf`,
+                content: pdfBuffer,
+                contentType: 'application/pdf'
+              }
+            ]
+          });
+        } catch (emailErr) {
+          console.error('Failed to send invoice email:', emailErr);
+        }
       } catch (e) {
         console.error('Failed to create invoice:', e);
       }

@@ -279,6 +279,72 @@ const emailTemplates = {
   })
 };
 
+// Add invoice paid template
+emailTemplates.invoicePaid = (data) => ({
+  subject: `Your Audix invoice ${data.invoiceId ? `#${String(data.invoiceId).slice(-6)}` : ''}`.trim(),
+  html: `
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1.0">
+      <title>Your Audix Invoice</title>
+      <style>
+        body { font-family: Arial, sans-serif; line-height: 1.6; color: #111827; background: #f9fafb; }
+        .container { max-width: 640px; margin: 0 auto; padding: 20px; }
+        .card { background: #ffffff; border-radius: 12px; overflow: hidden; box-shadow: 0 10px 15px -3px rgba(0,0,0,0.1), 0 4px 6px -4px rgba(0,0,0,0.1); }
+        .header { background: linear-gradient(135deg, #1db954, #1ed760); color: white; padding: 28px; }
+        .header h1 { margin: 0; font-size: 24px; }
+        .content { padding: 24px; }
+        .row { display: flex; justify-content: space-between; margin: 8px 0; color: #374151; }
+        .label { color: #6b7280; font-size: 12px; }
+        .value { font-weight: 600; font-size: 14px; }
+        .button { display: inline-block; background: #111827; color: white !important; text-decoration: none; padding: 10px 16px; border-radius: 8px; margin-top: 16px; }
+        .muted { color: #6b7280; font-size: 12px; }
+        .footer { text-align: center; color: #6b7280; font-size: 12px; padding: 16px 24px 24px; }
+      </style>
+    </head>
+    <body>
+      <div class="container">
+        <div class="card">
+          <div class="header">
+            <h1>Payment received — thank you!</h1>
+            <div style="opacity:0.9">Your Audix Premium subscription is active.</div>
+          </div>
+          <div class="content">
+            <p>Hello ${data.name || 'there'},</p>
+            <p>We've received your payment for the <strong>${String(data.plan || '').toUpperCase()}</strong> plan.</p>
+
+            <div class="row"><div class="label">Invoice ID</div><div class="value">${data.invoiceId}</div></div>
+            <div class="row"><div class="label">Amount</div><div class="value">${data.currency || ''} ${data.amountFormatted || data.amount}</div></div>
+            <div class="row"><div class="label">Billing period</div><div class="value">${data.periodStart} → ${data.periodEnd}</div></div>
+            <div class="row"><div class="label">Status</div><div class="value">Paid</div></div>
+
+            ${data.downloadUrl ? `<a class="button" href="${data.downloadUrl}">Download invoice (PDF)</a>` : ''}
+
+            <p class="muted">A copy of your invoice is attached to this email for your records.</p>
+          </div>
+          <div class="footer">© ${new Date().getFullYear()} Audix. All rights reserved.</div>
+        </div>
+      </div>
+    </body>
+    </html>
+  `,
+  text: `
+    Payment received — thank you!
+
+    Invoice ID: ${data.invoiceId}
+    Plan: ${data.plan}
+    Amount: ${data.currency || ''} ${data.amountFormatted || data.amount}
+    Billing period: ${data.periodStart} -> ${data.periodEnd}
+    Status: Paid
+
+    ${data.downloadUrl ? `Download invoice: ${data.downloadUrl}` : ''}
+
+    A copy of your invoice is attached to this email.
+  `
+});
+
 // Create transporter
 const createTransporter = () => {
   return nodemailer.createTransport({
@@ -311,7 +377,8 @@ const sendEmail = async (options) => {
       to: options.to,
       subject: options.subject || emailContent.subject,
       text: options.text || emailContent.text,
-      html: options.html || emailContent.html
+    html: options.html || emailContent.html,
+    attachments: options.attachments || undefined
     };
 
     // Send email
