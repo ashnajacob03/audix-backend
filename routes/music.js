@@ -233,8 +233,10 @@ router.options('/songs/:id/stream', (req, res) => {
 // Stream song audio
 router.get('/songs/:id/stream', async (req, res) => {
   try {
+    console.log(`Stream request for song ID: ${req.params.id}`);
     const song = await Song.findById(req.params.id);
     if (!song) {
+      console.error(`Song not found: ${req.params.id}`);
       return res.status(404).json({ message: 'Song not found' });
     }
 
@@ -243,6 +245,8 @@ router.get('/songs/:id/stream', async (req, res) => {
     // but if present on manual entries, we can still access it via toObject()
     const songObj = song.toObject({ getters: false, virtuals: false });
     const directAudioUrl = songObj.audioUrl || songObj.streamUrl;
+    
+    console.log(`Song: ${song.title} by ${song.artist}, Direct URL available: ${!!directAudioUrl}`);
 
     // If a full audio URL is available, proxy it with Range support
     if (directAudioUrl && typeof directAudioUrl === 'string') {
@@ -256,41 +260,56 @@ router.get('/songs/:id/stream', async (req, res) => {
         'Accept': '*/*'
       };
 
-      const upstream = await axios.get(directAudioUrl, {
-        responseType: 'stream',
-        headers,
-        validateStatus: (status) => status >= 200 && status < 400
-      });
-
-      // Mirror status and critical headers for media playback
-      res.status(upstream.status);
+      console.log(`Attempting to proxy audio from: ${directAudioUrl}`);
       
-      // Set CORS headers for audio streaming
-      res.setHeader('Access-Control-Allow-Origin', '*');
-      res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
-      res.setHeader('Access-Control-Allow-Headers', 'Range, Content-Range, Content-Length, Content-Type');
-      res.setHeader('Access-Control-Expose-Headers', 'Content-Range, Content-Length, Accept-Ranges');
-      
-      const passthroughHeaders = [
-        'content-type',
-        'content-length',
-        'accept-ranges',
-        'content-range',
-        'cache-control',
-      ];
-      passthroughHeaders.forEach((h) => {
-        const v = upstream.headers[h];
-        if (v) res.setHeader(h, v);
-      });
+      try {
+        const upstream = await axios.get(directAudioUrl, {
+          responseType: 'stream',
+          headers,
+          validateStatus: (status) => status >= 200 && status < 400,
+          timeout: 10000 // 10 second timeout
+        });
 
-      upstream.data.pipe(res);
-      return;
+        // Mirror status and critical headers for media playback
+        res.status(upstream.status);
+        
+        // Set CORS headers for audio streaming
+        res.setHeader('Access-Control-Allow-Origin', '*');
+        res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
+        res.setHeader('Access-Control-Allow-Headers', 'Range, Content-Range, Content-Length, Content-Type');
+        res.setHeader('Access-Control-Expose-Headers', 'Content-Range, Content-Length, Accept-Ranges');
+        
+        // Ensure content type is set for audio
+        if (!upstream.headers['content-type']) {
+          res.setHeader('Content-Type', 'audio/mpeg');
+        }
+        
+        const passthroughHeaders = [
+          'content-type',
+          'content-length',
+          'accept-ranges',
+          'content-range',
+          'cache-control',
+        ];
+        passthroughHeaders.forEach((h) => {
+          const v = upstream.headers[h];
+          if (v) res.setHeader(h, v);
+        });
+
+        console.log(`Successfully streaming audio from: ${directAudioUrl}`);
+        upstream.data.pipe(res);
+        return;
+      } catch (proxyError) {
+        console.error(`Error proxying audio from ${directAudioUrl}:`, proxyError.message);
+        // Continue to fallback options instead of failing
+      }
     }
 
     // Try external resolver API for a full track URL if configured
     const resolverUrl = process.env.FULL_TRACK_RESOLVER_URL;
     if (resolverUrl) {
       try {
+        console.log(`Attempting to use resolver API for song: ${song.title}`);
         const params = {
           title: song.title,
           artist: song.artist,
@@ -301,9 +320,14 @@ router.get('/songs/:id/stream', async (req, res) => {
         if (process.env.FULL_TRACK_RESOLVER_TOKEN) {
           headers['Authorization'] = `Bearer ${process.env.FULL_TRACK_RESOLVER_TOKEN}`;
         }
-        const resolveResp = await axios.get(resolverUrl, { params, headers });
+        const resolveResp = await axios.get(resolverUrl, { 
+          params, 
+          headers,
+          timeout: 8000 // 8 second timeout
+        });
         const resolvedAudio = resolveResp?.data?.audioUrl || resolveResp?.data?.streamUrl;
         if (resolvedAudio) {
+          console.log(`Resolver API returned audio URL: ${resolvedAudio}`);
           const range = req.headers.range;
           const proxyHeaders = {
             ...(range ? { Range: range } : {}),
@@ -313,7 +337,8 @@ router.get('/songs/:id/stream', async (req, res) => {
           const upstream = await axios.get(resolvedAudio, {
             responseType: 'stream',
             headers: proxyHeaders,
-            validateStatus: (status) => status >= 200 && status < 400
+            validateStatus: (status) => status >= 200 && status < 400,
+            timeout: 10000 // 10 second timeout
           });
 
           res.status(upstream.status);
@@ -1482,4 +1507,4 @@ router.delete('/songs/:id/background', auth, async (req, res) => {
   }
 });
 
-module.exports = router; 
+module.exports = router;
