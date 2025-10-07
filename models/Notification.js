@@ -29,6 +29,7 @@ const notificationSchema = new mongoose.Schema({
       'like',
       'comment',
       'playlist_share',
+      'new_song',
       'system'
     ],
     required: true
@@ -139,6 +140,19 @@ notificationSchema.statics.createFollowRequestAccepted = function(senderId, reci
     type: 'follow_request_accepted',
     title: 'Follow Request Accepted',
     message: 'accepted your follow request',
+    actionTaken: 'none'
+  });
+};
+
+// Static method to create new song notification
+notificationSchema.statics.createNewSongNotification = function(artistId, recipientId, songTitle, songId) {
+  return this.create({
+    recipient: recipientId,
+    sender: artistId,
+    type: 'new_song',
+    title: 'New Song Released',
+    message: `released a new song: "${songTitle}"`,
+    data: { songId },
     actionTaken: 'none'
   });
 };

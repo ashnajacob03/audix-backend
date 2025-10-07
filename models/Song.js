@@ -23,6 +23,11 @@ const songSchema = new mongoose.Schema({
     type: String,
     trim: true
   },
+  description: {
+    type: String,
+    trim: true,
+    maxlength: 1000
+  },
   albumArtist: {
     type: String,
     trim: true
@@ -130,6 +135,10 @@ const songSchema = new mongoose.Schema({
     type: Boolean,
     default: false
   },
+  uploadedBy: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User'
+  },
   isAvailable: {
     type: Boolean,
     default: true
@@ -163,6 +172,7 @@ songSchema.index({ releaseYear: -1 });
 songSchema.index({ genres: 1 });
 songSchema.index({ country: 1 });
 songSchema.index({ source: 1 });
+songSchema.index({ uploadedBy: 1 });
 
 // Virtual for formatted duration
 songSchema.virtual('durationFormatted').get(function() {

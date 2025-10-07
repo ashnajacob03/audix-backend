@@ -1,6 +1,10 @@
 const express = require('express');
 const router = express.Router();
 const axios = require('axios');
+const path = require('path');
+const fs = require('fs');
+const multer = require('multer');
+const mm = require('music-metadata');
 const { body, validationResult, query } = require('express-validator');
 const { auth, optionalAuth } = require('../middleware/auth');
 const Song = require('../models/Song');
@@ -8,10 +12,262 @@ const Playlist = require('../models/Playlist');
 const Artist = require('../models/Artist');
 const User = require('../models/User');
 const UserSongInteraction = require('../models/UserSongInteraction');
+const Notification = require('../models/Notification');
 const musicApiService = require('../services/musicApiService');
 const backgroundExtractionService = require('../services/backgroundExtractionService');
 
+// Utility function to fix artist names
+const fixArtistNames = (songs) => {
+  return songs.map(song => {
+    if (!song.artist || song.artist === 'undefined' || song.artist === '' || song.artist.includes('undefined')) {
+      if (song.uploadedBy) {
+        song.artist = `${song.uploadedBy.firstName} ${song.uploadedBy.lastName}`;
+        // Save the fix to the database
+        song.save().catch(err => console.error('Error saving artist name fix:', err));
+      } else {
+        song.artist = 'Unknown Artist';
+      }
+    }
+    return song;
+  });
+};
+
 // ===== SONG ROUTES =====
+
+// Upload storage (covers & audio)
+const ensureDir = (p) => { try { fs.mkdirSync(p, { recursive: true }); } catch {} };
+const coversDir = path.join(__dirname, '..', 'public', 'uploads', 'covers');
+const audioDir = path.join(__dirname, '..', 'public', 'uploads', 'audio');
+ensureDir(coversDir); ensureDir(audioDir);
+
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    if (file.fieldname === 'cover') return cb(null, coversDir);
+    return cb(null, audioDir);
+  },
+  filename: (req, file, cb) => {
+    const ext = path.extname(file.originalname) || (file.mimetype && `.${file.mimetype.split('/')[1]}`) || '';
+    cb(null, `${Date.now()}_${Math.random().toString(36).slice(2)}${ext}`);
+  }
+});
+const upload = multer({ storage });
+
+// Create manual song with uploads
+router.post('/songs', auth, upload.fields([
+  { name: 'audio', maxCount: 1 },
+  { name: 'cover', maxCount: 1 },
+]), async (req, res) => {
+  try {
+    const title = (req.body.title || '').trim();
+    const album = (req.body.album || '').trim();
+    const genre = (req.body.genre || '').trim();
+    const description = (req.body.description || '').trim();
+    const releaseDate = req.body.releaseDate ? new Date(req.body.releaseDate) : undefined;
+    const isExplicit = String(req.body.explicit) === 'true';
+    // Get artist name from request body or use user's full name
+    let artistName = req.body.artist ? req.body.artist.trim() : null;
+    
+    // If no artist name provided, use user's full name
+    if (!artistName) {
+      const firstName = req.user.firstName || '';
+      const lastName = req.user.lastName || '';
+      artistName = `${firstName} ${lastName}`.trim();
+    }
+    
+    // Ensure artist name is not empty or undefined
+    if (!artistName || artistName === 'undefined' || artistName === '' || artistName.includes('undefined')) {
+      return res.status(400).json({ 
+        message: 'Artist name is required and must be valid',
+        details: 'Please provide a valid artist name or ensure your profile has a complete name'
+      });
+    }
+
+    if (!title) return res.status(400).json({ message: 'Title is required' });
+
+    const audioFile = req.files?.audio?.[0];
+    if (!audioFile) return res.status(400).json({ message: 'Audio file is required' });
+
+    // Extract duration from audio
+    let durationSec = 0;
+    try {
+      const meta = await mm.parseFile(audioFile.path);
+      durationSec = Math.round(meta.format.duration || 0);
+    } catch {}
+    if (!durationSec || Number.isNaN(durationSec)) durationSec = 180; // fallback 3 min
+
+    const coverFile = req.files?.cover?.[0];
+
+    const audioUrl = `/uploads/audio/${path.basename(audioFile.path)}`;
+    const imageUrl = coverFile ? `/uploads/covers/${path.basename(coverFile.path)}` : undefined;
+
+    console.log(`Creating song: "${title}" by "${artistName}" (uploaded by: ${req.user.firstName} ${req.user.lastName})`);
+    console.log(`User details: ID=${req.user.id}, firstName="${req.user.firstName}", lastName="${req.user.lastName}"`);
+    console.log(`Request body artist: "${req.body.artist}"`);
+
+    const doc = new Song({
+      title,
+      artist: artistName,
+      album: album || undefined,
+      description: description || undefined,
+      duration: durationSec,
+      audioUrl,
+      imageUrl,
+      genres: genre ? [genre] : [],
+      releaseDate: releaseDate || undefined,
+      releaseYear: releaseDate ? releaseDate.getFullYear() : undefined,
+      isExplicit,
+      source: 'manual',
+      uploadedBy: req.user.id,
+      isAvailable: true,
+    });
+
+    await doc.save();
+
+    // Send notifications to followers of the artist
+    try {
+      // Find or create the artist document - try exact match first, then case-insensitive
+      let artistDoc = await Artist.findOne({ name: artistName });
+      
+      if (!artistDoc) {
+        // Try case-insensitive search
+        artistDoc = await Artist.findOne({ 
+          name: { $regex: new RegExp(`^${artistName}$`, 'i') } 
+        });
+      }
+      
+      if (!artistDoc) {
+        artistDoc = await Artist.create({ name: artistName });
+        console.log(`Created new artist document for: ${artistName}`);
+      } else {
+        console.log(`Found existing artist document for: ${artistName} (actual name: ${artistDoc.name})`);
+      }
+
+      // Get all followers of this artist
+      const followers = await User.find({ 
+        followedArtists: artistDoc._id 
+      }).select('_id firstName lastName');
+
+      console.log(`Found ${followers.length} followers for artist: ${artistDoc.name} (ID: ${artistDoc._id})`);
+
+      // Send notifications to all followers
+      const notificationPromises = followers.map(follower => 
+        Notification.createNewSongNotification(
+          req.user.id, // sender (the user who uploaded the song)
+          follower._id, // recipient (the follower)
+          title, // song title
+          doc._id // song ID
+        )
+      );
+
+      // Execute all notifications in parallel
+      await Promise.all(notificationPromises);
+      
+      console.log(`Sent ${followers.length} notifications for new song: ${title} by ${artistDoc.name}`);
+    } catch (notificationError) {
+      // Log error but don't fail the song creation
+      console.error('Error sending song notifications:', notificationError);
+    }
+
+    res.status(201).json(doc);
+  } catch (error) {
+    console.error('Error creating manual song:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// Update manual song (metadata + optional new files)
+router.put('/songs/:id', auth, upload.fields([
+  { name: 'audio', maxCount: 1 },
+  { name: 'cover', maxCount: 1 },
+]), async (req, res) => {
+  try {
+    const song = await Song.findById(req.params.id);
+    if (!song) return res.status(404).json({ message: 'Song not found' });
+    if (song.source !== 'manual' || song.uploadedBy?.toString() !== req.user.id) {
+      return res.status(403).json({ message: 'Not allowed' });
+    }
+
+    const title = (req.body.title || '').trim();
+    const genre = (req.body.genre || '').trim();
+    const description = (req.body.description || '').trim();
+    
+    // Handle artist name update
+    let artistName = req.body.artist ? req.body.artist.trim() : null;
+    if (!artistName) {
+      const firstName = req.user.firstName || '';
+      const lastName = req.user.lastName || '';
+      artistName = `${firstName} ${lastName}`.trim();
+    }
+    
+    // Ensure artist name is valid
+    if (artistName && artistName !== 'undefined' && artistName !== '' && !artistName.includes('undefined')) {
+      song.artist = artistName;
+    }
+
+    if (title) song.title = title;
+    if (genre) song.genres = [genre]; else if (req.body.genre === '') song.genres = [];
+    song.description = description || undefined;
+
+    const audioFile = req.files?.audio?.[0];
+    const coverFile = req.files?.cover?.[0];
+
+    const unlinkSafe = (p) => { try { fs.unlinkSync(p); } catch {} };
+    if (audioFile) {
+      // delete old audio if local file
+      if (song.audioUrl && song.audioUrl.startsWith('/uploads/audio/')) {
+        unlinkSafe(path.join(__dirname, '..', 'public', song.audioUrl.replace(/^\//, '')));
+      }
+      song.audioUrl = `/uploads/audio/${path.basename(audioFile.path)}`;
+      try {
+        const meta = await mm.parseFile(audioFile.path);
+        song.duration = Math.round(meta.format.duration || song.duration || 0) || song.duration || 180;
+      } catch {}
+    }
+    if (coverFile) {
+      if (song.imageUrl && song.imageUrl.startsWith('/uploads/covers/')) {
+        unlinkSafe(path.join(__dirname, '..', 'public', song.imageUrl.replace(/^\//, '')));
+      }
+      song.imageUrl = `/uploads/covers/${path.basename(coverFile.path)}`;
+    }
+
+    await song.save();
+    res.json(song);
+  } catch (error) {
+    console.error('Error updating song:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// Get current artist's uploaded songs
+router.get('/my-songs', auth, async (req, res) => {
+  try {
+    const songs = await Song.find({ source: 'manual', uploadedBy: req.user.id }).sort({ createdAt: -1 });
+    res.json(songs);
+  } catch (error) {
+    console.error('Error fetching my songs:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// Delete a manual song (owner by artist name)
+router.delete('/songs/:id', auth, async (req, res) => {
+  try {
+    const song = await Song.findById(req.params.id);
+    if (!song) return res.status(404).json({ message: 'Song not found' });
+    if (song.source !== 'manual' || song.uploadedBy?.toString() !== req.user.id) {
+      return res.status(403).json({ message: 'Not allowed' });
+    }
+    // Remove files if they exist
+    const unlinkSafe = (p) => { try { fs.unlinkSync(p); } catch {} };
+    if (song.audioUrl) unlinkSafe(path.join(__dirname, '..', 'public', song.audioUrl.replace(/^\//, '')));
+    if (song.imageUrl) unlinkSafe(path.join(__dirname, '..', 'public', song.imageUrl.replace(/^\//, '')));
+    await Song.deleteOne({ _id: song._id });
+    res.json({ message: 'Deleted' });
+  } catch (error) {
+    console.error('Error deleting song:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
 
 // Get all songs with pagination and filters
 router.get('/songs', [
@@ -53,12 +309,16 @@ router.get('/songs', [
       .sort(sortObj)
       .skip(skip)
       .limit(parseInt(limit))
-      .select('-audioFeatures');
+      .select('-audioFeatures')
+      .populate('uploadedBy', 'firstName lastName');
+
+    // Fix artist names for songs with undefined or bad artist names
+    const fixedSongs = fixArtistNames(songs);
 
     const total = await Song.countDocuments(filter);
 
     res.json({
-      songs,
+      songs: fixedSongs,
       pagination: {
         page: parseInt(page),
         limit: parseInt(limit),
@@ -557,9 +817,13 @@ router.get('/search', [
         isAvailable: true
       })
       .limit(parseInt(limit))
-      .select('-audioFeatures');
+      .select('-audioFeatures')
+      .populate('uploadedBy', 'firstName lastName');
       
-      results.songs = localSongs;
+      // Fix artist names for songs with undefined or bad artist names
+      const fixedLocalSongs = fixArtistNames(localSongs);
+      
+      results.songs = fixedLocalSongs;
     }
 
     // Search external APIs if requested
@@ -600,7 +864,8 @@ router.get('/search', [
     }
 
     if (type === 'artist' || type === 'all') {
-      const artists = await Song.aggregate([
+      // Search artists from songs
+      const artistsFromSongs = await Song.aggregate([
         {
           $match: {
             artist: { $regex: query, $options: 'i' },
@@ -616,8 +881,36 @@ router.get('/search', [
         },
         { $limit: parseInt(limit) }
       ]);
+
+      // Also search artists from Artist collection (for artists without songs yet)
+      const artistsFromCollection = await Artist.find({
+        name: { $regex: query, $options: 'i' }
+      }).limit(parseInt(limit));
+
+      // Merge results, prioritizing artists with songs
+      const artistMap = new Map();
       
-      results.artists = artists;
+      // Add artists with songs first
+      artistsFromSongs.forEach(artist => {
+        artistMap.set(artist._id, {
+          name: artist._id,
+          songCount: artist.songCount,
+          imageUrl: artist.latestSong?.imageUrl || artist.latestSong?.largeImageUrl || null
+        });
+      });
+
+      // Add artists without songs if not already present
+      artistsFromCollection.forEach(artist => {
+        if (!artistMap.has(artist.name)) {
+          artistMap.set(artist.name, {
+            name: artist.name,
+            songCount: 0,
+            imageUrl: artist.imageUrl || null
+          });
+        }
+      });
+
+      results.artists = Array.from(artistMap.values()).slice(0, parseInt(limit));
     }
 
     if (type === 'album' || type === 'all') {
@@ -674,9 +967,13 @@ router.get('/popular', [
     const songs = await Song.find(filter)
       .sort({ popularity: -1, playCount: -1 })
       .limit(parseInt(limit))
-      .select('-audioFeatures');
+      .select('-audioFeatures')
+      .populate('uploadedBy', 'firstName lastName');
 
-    res.json(songs);
+    // Fix artist names for songs with undefined or bad artist names
+    const fixedSongs = fixArtistNames(songs);
+
+    res.json(fixedSongs);
   } catch (error) {
     console.error('Error fetching popular songs:', error);
     res.status(500).json({ message: 'Server error' });

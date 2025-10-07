@@ -770,6 +770,10 @@ app.use('/api/admin', adminRoutes);
 app.use('/api/music', musicRoutes);
 app.use('/api/invoices', invoiceRoutes);
 
+// Serve uploaded covers and audio
+app.use('/uploads/covers', express.static(path.join(__dirname, 'public/uploads/covers')));
+app.use('/uploads/audio', express.static(path.join(__dirname, 'public/uploads/audio')));
+
 // Serve extracted background music files
 app.use('/extracted', express.static(path.join(__dirname, 'public/extracted')));
 app.use('/artist-verifications', express.static(path.join(__dirname, 'public/artist-verifications')));
