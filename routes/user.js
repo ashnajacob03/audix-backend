@@ -11,6 +11,8 @@ const { auth } = require('../middleware/auth');
 const expressValidator = require('express-validator');
 const { body: bodyValidator, validationResult: validationResultValidator } = expressValidator;
 const speakeasy = require('speakeasy');
+const Song = require('../models/Song');
+const Conversation = require('../models/Conversation');
 
 const router = express.Router();
 
@@ -651,42 +653,104 @@ router.post('/follow-artist', auth, async (req, res) => {
       return res.status(400).json({ success: false, message: 'Artist name is required' });
     }
 
+    // Ensure artist doc exists (upsert-like behavior)
     let artistDoc = await Artist.findOne({ name });
-    if (!artistDoc) {
-      artistDoc = await Artist.create({ name });
-    }
+    if (!artistDoc) artistDoc = await Artist.create({ name });
 
-    const user = await User.findById(req.user.id);
-    const isFollowing = Array.isArray(user.followedArtists) && user.followedArtists.some(id => id.toString() === artistDoc._id.toString());
+    const userId = req.user.id;
+    const artistId = artistDoc._id.toString();
+
+    // Read current follow state by checking both sides to be robust
+    const user = await User.findById(userId).select('followedArtists');
+    const userFollowing = Array.isArray(user.followedArtists) && user.followedArtists.some(id => id.toString() === artistId);
+    const artistHasUser = Array.isArray(artistDoc.followers) && artistDoc.followers.some(id => id.toString() === userId);
+    const isFollowing = userFollowing || artistHasUser;
 
     if (isFollowing) {
-      user.followedArtists = user.followedArtists.filter(id => id.toString() !== artistDoc._id.toString());
-      artistDoc.followers = (artistDoc.followers || []).filter(id => id.toString() !== user._id.toString());
-      artistDoc.followerCount = Math.max(0, (artistDoc.followerCount || 0) - 1);
+      // Atomic remove
+      await Promise.all([
+        User.findByIdAndUpdate(userId, { $pull: { followedArtists: artistDoc._id } }),
+        Artist.findByIdAndUpdate(artistDoc._id, { $pull: { followers: userId } })
+      ]);
     } else {
-      // Add only if not already present
-      if (!user.followedArtists.some(id => id.toString() === artistDoc._id.toString())) {
-        user.followedArtists.push(artistDoc._id);
-      }
-      artistDoc.followers = Array.isArray(artistDoc.followers) ? artistDoc.followers : [];
-      if (!artistDoc.followers.some(id => id.toString() === user._id.toString())) {
-        artistDoc.followers.push(user._id);
-        artistDoc.followerCount = (artistDoc.followerCount || 0) + 1;
-      }
+      // Atomic add
+      await Promise.all([
+        User.findByIdAndUpdate(userId, { $addToSet: { followedArtists: artistDoc._id } }),
+        Artist.findByIdAndUpdate(artistDoc._id, { $addToSet: { followers: userId } })
+      ]);
     }
 
-    await Promise.all([user.save(), artistDoc.save()]);
+    // Recalculate followerCount reliably from array length
+    const freshArtist = await Artist.findById(artistDoc._id).select('followers name');
+    const followerCount = Array.isArray(freshArtist?.followers) ? freshArtist.followers.length : 0;
+    await Artist.findByIdAndUpdate(artistDoc._id, { $set: { followerCount } });
 
     res.json({
       success: true,
       message: isFollowing ? 'Unfollowed artist' : 'Followed artist',
       isFollowing: !isFollowing,
+      followerCount,
       artistId: artistDoc._id,
       name: artistDoc.name
     });
   } catch (error) {
     console.error('Follow artist error:', error);
     res.status(500).json({ success: false, message: 'Internal server error' });
+  }
+});
+
+// @route   GET /api/user/artist-contact/:name
+// @desc    Resolve an artist name to a reachable user for messaging
+// @access  Private
+router.get('/artist-contact/:name', auth, async (req, res) => {
+  try {
+    const raw = req.params.name || '';
+    const name = decodeURIComponent(raw).trim();
+    if (!name) return res.status(400).json({ success: false, message: 'Artist name required' });
+
+    // Strategy:
+    // 1) Find any user marked isArtist whose songs match this artist name (uploadedBy) or name variants
+    // 2) Fallback: try the most recent uploader of a song by this artist
+    // 3) As last resort, none
+
+    // Find by uploadedBy first
+    const latestByUploader = await Song.findOne({ artist: name, isAvailable: true, uploadedBy: { $exists: true, $ne: null } })
+      .sort({ createdAt: -1 })
+      .select('uploadedBy');
+
+    let userId = latestByUploader?.uploadedBy?.toString?.() || null;
+
+    // If exists but user is inactive, null it out
+    if (userId) {
+      const u = await User.findById(userId).select('_id isActive');
+      if (!u || u.isActive === false) userId = null;
+    }
+
+    // If still not found, try to map via name variants to a user who isArtist=true
+    if (!userId) {
+      const nameParts = name.split(' ').filter(Boolean);
+      const firstName = nameParts[0] || '';
+      const lastName = nameParts.slice(1).join(' ');
+      const candidates = await User.find({ isArtist: true }).select('firstName lastName');
+      const matched = candidates.find(c => {
+        const full = `${c.firstName || ''} ${c.lastName || ''}`.trim().toLowerCase();
+        return full === name.toLowerCase() || (firstName && c.firstName?.toLowerCase() === firstName.toLowerCase());
+      });
+      if (matched) userId = matched._id.toString();
+    }
+
+    if (!userId) {
+      return res.json({ success: true, data: { userId: null } });
+    }
+
+    // Ensure a conversation exists (create if missing) so the UI can open immediately
+    const currentUserId = req.user.id;
+    const convo = await Conversation.findOrCreateConversation([currentUserId, userId]);
+
+    return res.json({ success: true, data: { userId, conversationId: convo.conversationId } });
+  } catch (err) {
+    console.error('artist-contact resolve error:', err);
+    return res.status(500).json({ success: false, message: 'Failed to resolve artist contact' });
   }
 });
 

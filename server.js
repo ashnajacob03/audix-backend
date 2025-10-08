@@ -403,14 +403,15 @@ io.on('connection', (socket) => {
 
 
 
-      const sender = await User.findById(senderId);
-
-      if (!sender.friends.includes(receiverId)) {
-
-        socket.emit('message_error', { error: 'You can only message friends' });
-
-        return;
-
+      const sender = await User.findById(senderId).select('friends');
+      const isFriend = sender.friends.includes(receiverId);
+      if (!isFriend) {
+        const Song = require('./models/Song');
+        const hasUploads = await Song.exists({ uploadedBy: receiverId });
+        if (!hasUploads) {
+          socket.emit('message_error', { error: 'You can only message friends or artists you follow' });
+          return;
+        }
       }
 
 

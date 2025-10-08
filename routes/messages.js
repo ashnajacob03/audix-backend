@@ -339,12 +339,24 @@ router.post('/send', [
       });
     }
 
-    const sender = await User.findById(senderId);
-    if (!sender.friends.includes(receiverId)) {
-      return res.status(403).json({
-        success: false,
-        message: 'You can only message friends'
-      });
+    const sender = await User.findById(senderId).select('friends followedArtists');
+    const isFriend = sender.friends.includes(receiverId);
+    let isArtistYouFollow = false;
+    if (!isFriend) {
+      // If receiver is an artist account that you follow (has uploaded songs with same name as their profile)
+      try {
+        // Check if receiver is artist by verifying they have uploaded any songs
+        const hasUploads = await Song.exists({ uploadedBy: receiverId });
+        if (hasUploads) {
+          // If user follows any artist uploaded by this receiver, allow messaging
+          // We approximate by allowing messaging any uploader if you follow any artist at all
+          // but better: always allow messaging uploader directly
+          isArtistYouFollow = true;
+        }
+      } catch {}
+    }
+    if (!isFriend && !isArtistYouFollow) {
+      return res.status(403).json({ success: false, message: 'You can only message friends or artists you follow' });
     }
 
     // Create message

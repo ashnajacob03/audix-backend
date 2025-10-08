@@ -1,6 +1,7 @@
 const express = require('express');
 const { body, validationResult } = require('express-validator');
 const User = require('../models/User');
+const Artist = require('../models/Artist');
 const { auth } = require('../middleware/auth');
 const Notification = require('../models/Notification');
 const ArtistVerification = require('../models/ArtistVerification');
@@ -75,6 +76,166 @@ router.get('/dashboard', [auth, adminAuth], async (req, res) => {
     });
   } catch (error) {
     console.error('Get admin dashboard error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error'
+    });
+  }
+});
+
+// @route   GET /api/admin/analytics
+// @desc    Get analytics data for charts
+// @access  Admin
+router.get('/analytics', [auth, adminAuth], async (req, res) => {
+  try {
+    const range = req.query.range || '30d';
+    const days = range === '7d' ? 7 : range === '30d' ? 30 : 90;
+    const startDate = new Date();
+    startDate.setDate(startDate.getDate() - days);
+    
+    // Get users over time (daily registration data)
+    const usersOverTime = await User.aggregate([
+      {
+        $match: {
+          createdAt: { $gte: startDate },
+          isActive: true
+        }
+      },
+      {
+        $group: {
+          _id: {
+            date: { $dateToString: { format: "%Y-%m-%d", date: "$createdAt" } },
+            accountType: "$accountType"
+          },
+          count: { $sum: 1 }
+        }
+      },
+      {
+        $group: {
+          _id: "$_id.date",
+          total: { $sum: "$count" },
+          premium: {
+            $sum: {
+              $cond: [
+                { $in: ["$_id.accountType", ["premium", "family", "student"]] },
+                "$count",
+                0
+              ]
+            }
+          }
+        }
+      },
+      { $sort: { _id: 1 } }
+    ]);
+
+    // Fill missing dates with 0 values
+    const usersOverTimeMap = {};
+    usersOverTime.forEach(item => {
+      usersOverTimeMap[item._id] = { total: item.total, premium: item.premium };
+    });
+
+    const filledUsersOverTime = [];
+    for (let i = days - 1; i >= 0; i--) {
+      const date = new Date();
+      date.setDate(date.getDate() - i);
+      const dateStr = date.toISOString().split('T')[0];
+      filledUsersOverTime.push({
+        date: dateStr,
+        total: usersOverTimeMap[dateStr]?.total || 0,
+        premium: usersOverTimeMap[dateStr]?.premium || 0
+      });
+    }
+
+    // Get daily active users (users who logged in each day)
+    const dailyActiveUsers = await User.aggregate([
+      {
+        $match: {
+          lastLogin: { $gte: startDate },
+          isActive: true
+        }
+      },
+      {
+        $group: {
+          _id: { $dateToString: { format: "%Y-%m-%d", date: "$lastLogin" } },
+          active: { $sum: 1 }
+        }
+      },
+      { $sort: { _id: 1 } }
+    ]);
+
+    // Fill missing dates
+    const activeUsersMap = {};
+    dailyActiveUsers.forEach(item => {
+      activeUsersMap[item._id] = item.active;
+    });
+
+    const filledDailyActiveUsers = [];
+    for (let i = days - 1; i >= 0; i--) {
+      const date = new Date();
+      date.setDate(date.getDate() - i);
+      const dateStr = date.toISOString().split('T')[0];
+      filledDailyActiveUsers.push({
+        date: dateStr,
+        active: activeUsersMap[dateStr] || 0
+      });
+    }
+
+    // Get streams over time (mock for now - replace with real streaming data when available)
+    const streamsOverTime = [];
+    for (let i = days - 1; i >= 0; i--) {
+      const date = new Date();
+      date.setDate(date.getDate() - i);
+      const dateStr = date.toISOString().split('T')[0];
+      streamsOverTime.push({
+        date: dateStr,
+        streams: Math.floor(Math.random() * 100) + 50 // Replace with real streaming data
+      });
+    }
+    
+    // Get real account type breakdown
+    const accountTypeBreakdown = await User.aggregate([
+      { $match: { isActive: true } },
+      { $group: { _id: '$accountType', count: { $sum: 1 } } }
+    ]);
+    
+    const accounts = {};
+    accountTypeBreakdown.forEach(item => {
+      accounts[item._id] = item.count;
+    });
+
+    // Calculate insights
+    const totalUsers = filledUsersOverTime.reduce((sum, day) => sum + day.total, 0);
+    const totalPremium = filledUsersOverTime.reduce((sum, day) => sum + day.premium, 0);
+    const avgDailyActive = filledDailyActiveUsers.reduce((sum, day) => sum + day.active, 0) / days;
+    const premiumRate = totalUsers > 0 ? ((totalPremium / totalUsers) * 100).toFixed(1) : 0;
+    
+    // Growth calculation
+    const firstWeek = filledUsersOverTime.slice(0, 7).reduce((sum, day) => sum + day.total, 0);
+    const lastWeek = filledUsersOverTime.slice(-7).reduce((sum, day) => sum + day.total, 0);
+    const growthRate = firstWeek > 0 ? (((lastWeek - firstWeek) / firstWeek) * 100).toFixed(1) : 0;
+
+    const insights = {
+      totalUsers,
+      totalPremium,
+      avgDailyActive: Math.round(avgDailyActive),
+      premiumRate: `${premiumRate}%`,
+      growthRate: `${growthRate}%`,
+      topAccountType: Object.keys(accounts).reduce((a, b) => accounts[a] > accounts[b] ? a : b, 'free'),
+      totalStreams: streamsOverTime.reduce((sum, day) => sum + day.streams, 0)
+    };
+
+    res.json({
+      success: true,
+      data: {
+        usersOverTime: filledUsersOverTime,
+        dailyActiveUsers: filledDailyActiveUsers,
+        streamsOverTime,
+        accountTypeBreakdown: accounts,
+        insights
+      }
+    });
+  } catch (error) {
+    console.error('Get analytics error:', error);
     res.status(500).json({
       success: false,
       message: 'Internal server error'
@@ -598,6 +759,93 @@ router.put('/users/bulk', [
       success: false,
       message: 'Internal server error'
     });
+  }
+});
+
+// ===== Artists CRUD (Admin) =====
+// List artists with pagination and search
+router.get('/artists', [auth, adminAuth], async (req, res) => {
+  try {
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 20;
+    const search = (req.query.search || '').trim();
+    const skip = (page - 1) * limit;
+
+    const filter = {};
+    if (search) filter.name = { $regex: search, $options: 'i' };
+
+    const [items, total] = await Promise.all([
+      Artist.find(filter)
+        .select('name imageUrl followerCount createdAt')
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limit),
+      Artist.countDocuments(filter)
+    ]);
+
+    res.json({
+      success: true,
+      data: {
+        artists: items.map(a => ({
+          id: a._id,
+          name: a.name,
+          imageUrl: a.imageUrl || null,
+          followerCount: a.followerCount || 0,
+          createdAt: a.createdAt
+        })),
+        pagination: { page, limit, total, pages: Math.ceil(total / limit) }
+      }
+    });
+  } catch (error) {
+    console.error('List admin artists error:', error);
+    res.status(500).json({ success: false, message: 'Internal server error' });
+  }
+});
+
+// Create artist
+router.post('/artists', [auth, adminAuth, body('name').notEmpty()], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ success: false, message: 'Validation failed', errors: errors.array() });
+    }
+    const { name, imageUrl } = req.body;
+    const existing = await Artist.findOne({ name });
+    if (existing) return res.status(400).json({ success: false, message: 'Artist already exists' });
+    const artist = await Artist.create({ name, imageUrl: imageUrl || null });
+    res.status(201).json({ success: true, data: { artist: { id: artist._id, name: artist.name, imageUrl: artist.imageUrl || null, followerCount: artist.followerCount || 0 } } });
+  } catch (error) {
+    console.error('Create admin artist error:', error);
+    res.status(500).json({ success: false, message: 'Internal server error' });
+  }
+});
+
+// Update artist
+router.put('/artists/:id', [auth, adminAuth], async (req, res) => {
+  try {
+    const { id } = req.params;
+    const updates = {};
+    if (req.body.name !== undefined) updates.name = req.body.name;
+    if (req.body.imageUrl !== undefined) updates.imageUrl = req.body.imageUrl;
+    const artist = await Artist.findByIdAndUpdate(id, updates, { new: true });
+    if (!artist) return res.status(404).json({ success: false, message: 'Artist not found' });
+    res.json({ success: true, data: { artist: { id: artist._id, name: artist.name, imageUrl: artist.imageUrl || null, followerCount: artist.followerCount || 0 } } });
+  } catch (error) {
+    console.error('Update admin artist error:', error);
+    res.status(500).json({ success: false, message: 'Internal server error' });
+  }
+});
+
+// Delete artist
+router.delete('/artists/:id', [auth, adminAuth], async (req, res) => {
+  try {
+    const { id } = req.params;
+    const artist = await Artist.findByIdAndDelete(id);
+    if (!artist) return res.status(404).json({ success: false, message: 'Artist not found' });
+    res.json({ success: true, message: 'Artist deleted' });
+  } catch (error) {
+    console.error('Delete admin artist error:', error);
+    res.status(500).json({ success: false, message: 'Internal server error' });
   }
 });
 
