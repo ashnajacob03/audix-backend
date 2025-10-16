@@ -264,7 +264,7 @@ router.get('/users', [auth, adminAuth], async (req, res) => {
     }
 
     const users = await User.find(filter)
-      .select('firstName lastName email profilePicture accountType createdAt lastLogin isEmailVerified isAdmin isActive')
+      .select('firstName lastName email profilePicture accountType createdAt lastLogin isEmailVerified isAdmin isActive isAccountActive')
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(limit);
@@ -284,7 +284,7 @@ router.get('/users', [auth, adminAuth], async (req, res) => {
       // Online activity indicator (last 7 days)
       isActive: user.lastLogin && (Date.now() - new Date(user.lastLogin).getTime()) < 7 * 24 * 60 * 60 * 1000,
       // Actual account activation state (soft-deleted if false)
-      isAccountActive: !!user.isActive
+      isAccountActive: user.isAccountActive !== false
     }));
 
     res.json({
@@ -579,16 +579,80 @@ router.put('/users/:userId', [
 
     // Update allowed fields
     const allowedFields = ['firstName', 'lastName', 'email', 'accountType', 'isAdmin', 'isEmailVerified', 'isActive'];
+    console.log('Before update - User data:', {
+      id: user._id,
+      firstName: user.firstName,
+      lastName: user.lastName,
+      email: user.email,
+      accountType: user.accountType,
+      isAdmin: user.isAdmin,
+      isEmailVerified: user.isEmailVerified,
+      isActive: user.isActive
+    });
+    
+    console.log('Updates received:', updates);
+    
     allowedFields.forEach(field => {
       if (updates[field] !== undefined) {
+        console.log(`Updating field ${field} from ${user[field]} to ${updates[field]}`);
         user[field] = updates[field];
       }
     });
 
-    await user.save();
-    console.log('User updated successfully:', user._id);
+    console.log('After update - User data:', {
+      id: user._id,
+      firstName: user.firstName,
+      lastName: user.lastName,
+      email: user.email,
+      accountType: user.accountType,
+      isAdmin: user.isAdmin,
+      isEmailVerified: user.isEmailVerified,
+      isActive: user.isActive
+    });
+
+    const savedUser = await user.save();
+    console.log('User saved successfully:', savedUser._id);
+    console.log('Saved user data:', {
+      id: savedUser._id,
+      firstName: savedUser.firstName,
+      lastName: savedUser.lastName,
+      email: savedUser.email,
+      accountType: savedUser.accountType,
+      isAdmin: savedUser.isAdmin,
+      isEmailVerified: savedUser.isEmailVerified,
+      isActive: savedUser.isActive
+    });
+
+    // Verify the update by fetching the user from database again
+    const verifyUser = await User.findById(userId);
+    console.log('Verification - User data from DB:', {
+      id: verifyUser._id,
+      firstName: verifyUser.firstName,
+      lastName: verifyUser.lastName,
+      email: verifyUser.email,
+      accountType: verifyUser.accountType,
+      isAdmin: verifyUser.isAdmin,
+      isEmailVerified: verifyUser.isEmailVerified,
+      isActive: verifyUser.isActive
+    });
 
     res.json({
+      success: true,
+      message: 'User updated successfully',
+      data: { 
+        user: {
+          id: user._id,
+          name: user.fullName,
+          email: user.email,
+          accountType: user.accountType,
+          isAdmin: user.isAdmin,
+          isEmailVerified: user.isEmailVerified,
+          isActive: user.isActive
+        }
+      }
+    });
+    
+    console.log('Response sent to frontend:', {
       success: true,
       message: 'User updated successfully',
       data: { 
@@ -846,6 +910,142 @@ router.delete('/artists/:id', [auth, adminAuth], async (req, res) => {
   } catch (error) {
     console.error('Delete admin artist error:', error);
     res.status(500).json({ success: false, message: 'Internal server error' });
+  }
+});
+
+// @route   POST /api/admin/users/:userId/activate
+// @desc    Activate user account
+// @access  Admin
+router.post('/users/:userId/activate', [auth, adminAuth], async (req, res) => {
+  try {
+    const { userId } = req.params;
+    console.log('Activate user request:', userId, 'by admin:', req.user.id);
+
+    const user = await User.findById(userId);
+    if (!user) {
+      console.log('User not found for activation:', userId);
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+
+    // Activate the user
+    user.isAccountActive = true;
+    await user.save();
+
+    // Send activation email notification
+    try {
+      const { sendEmail } = require('../utils/sendEmail');
+      const baseUrl = process.env.FRONTEND_URL || process.env.CLIENT_URL || 'http://localhost:5173';
+      
+      await sendEmail({
+        to: user.email,
+        template: 'accountActivated',
+        data: {
+          name: user.fullName || user.firstName,
+          loginUrl: `${baseUrl}/login`,
+          supportUrl: `${baseUrl}/support`
+        }
+      });
+      console.log('Activation email sent successfully to:', user.email);
+    } catch (emailError) {
+      console.error('Failed to send activation email:', emailError);
+      // Don't fail the request if email fails
+    }
+
+    console.log('User activated successfully:', userId);
+
+    res.json({
+      success: true,
+      message: 'User activated successfully. Email notification sent.',
+      data: { 
+        user: {
+          id: user._id,
+          name: user.fullName,
+          email: user.email,
+          isAccountActive: user.isAccountActive
+        }
+      }
+    });
+  } catch (error) {
+    console.error('Activate user error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error'
+    });
+  }
+});
+
+// @route   POST /api/admin/users/:userId/deactivate
+// @desc    Deactivate user account
+// @access  Admin
+router.post('/users/:userId/deactivate', [auth, adminAuth], async (req, res) => {
+  try {
+    const { userId } = req.params;
+    console.log('Deactivate user request:', userId, 'by admin:', req.user.id);
+
+    // Prevent admin from deactivating themselves
+    if (userId === req.user.id) {
+      console.log('Admin trying to deactivate themselves');
+      return res.status(400).json({
+        success: false,
+        message: 'You cannot deactivate your own account'
+      });
+    }
+
+    const user = await User.findById(userId);
+    if (!user) {
+      console.log('User not found for deactivation:', userId);
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+
+    // Deactivate the user
+    user.isAccountActive = false;
+    await user.save();
+
+    // Send deactivation email notification
+    try {
+      const { sendEmail } = require('../utils/sendEmail');
+      const baseUrl = process.env.FRONTEND_URL || process.env.CLIENT_URL || 'http://localhost:5173';
+      
+      await sendEmail({
+        to: user.email,
+        template: 'accountDeactivated',
+        data: {
+          name: user.fullName || user.firstName,
+          supportUrl: `${baseUrl}/support`
+        }
+      });
+      console.log('Deactivation email sent successfully to:', user.email);
+    } catch (emailError) {
+      console.error('Failed to send deactivation email:', emailError);
+      // Don't fail the request if email fails
+    }
+
+    console.log('User deactivated successfully:', userId);
+
+    res.json({
+      success: true,
+      message: 'User deactivated successfully. Email notification sent.',
+      data: { 
+        user: {
+          id: user._id,
+          name: user.fullName,
+          email: user.email,
+          isAccountActive: user.isAccountActive
+        }
+      }
+    });
+  } catch (error) {
+    console.error('Deactivate user error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error'
+    });
   }
 });
 

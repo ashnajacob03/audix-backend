@@ -279,6 +279,160 @@ const emailTemplates = {
   })
 };
 
+// Add account activation template
+emailTemplates.accountActivated = (data) => ({
+  subject: 'Your Audix Account Has Been Activated 🎉',
+  html: `
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1.0">
+      <title>Account Activated</title>
+      <style>
+        body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+        .container { max-width: 600px; margin: 0 auto; padding: 20px; }
+        .header { background: linear-gradient(135deg, #1db954, #1ed760); color: white; padding: 30px; text-align: center; border-radius: 10px 10px 0 0; }
+        .content { background: #f9f9f9; padding: 30px; border-radius: 0 0 10px 10px; }
+        .button { display: inline-block; background: #1db954; color: white; padding: 12px 30px; text-decoration: none; border-radius: 5px; margin: 20px 0; }
+        .footer { text-align: center; margin-top: 30px; color: #666; font-size: 14px; }
+        .success-box { background: #d4edda; border: 1px solid #c3e6cb; color: #155724; padding: 15px; border-radius: 5px; margin: 20px 0; }
+      </style>
+    </head>
+    <body>
+      <div class="container">
+        <div class="header">
+          <h1>🎵 Audix</h1>
+          <h2>Account Activated!</h2>
+        </div>
+        <div class="content">
+          <div class="success-box">
+            <strong>Great news!</strong> Your Audix account has been activated by our support team.
+          </div>
+          <p>Hello ${data.name},</p>
+          <p>We're pleased to inform you that your Audix account has been successfully activated. You can now access all features and enjoy unlimited music streaming.</p>
+          <p>What you can do now:</p>
+          <ul>
+            <li>🎵 Stream unlimited music</li>
+            <li>📱 Access on all your devices</li>
+            <li>🎧 Create and manage playlists</li>
+            <li>🔍 Discover new artists and songs</li>
+            <li>💾 Download music for offline listening (Premium users)</li>
+          </ul>
+          <div style="text-align: center;">
+            <a href="${data.loginUrl || 'https://audix.com/login'}" class="button">Login to Audix</a>
+          </div>
+          <p>If you have any questions or need assistance, please don't hesitate to contact our support team.</p>
+          <p>Welcome back to Audix!</p>
+        </div>
+        <div class="footer">
+          <p>© ${new Date().getFullYear()} Audix. All rights reserved.</p>
+          <p>This email was sent regarding your account status. Please do not reply to this email.</p>
+        </div>
+      </div>
+    </body>
+    </html>
+  `,
+  text: `
+    Account Activated - Audix
+    
+    Hello ${data.name},
+    
+    Great news! Your Audix account has been activated by our support team.
+    
+    You can now access all features and enjoy unlimited music streaming:
+    - Stream unlimited music
+    - Access on all your devices
+    - Create and manage playlists
+    - Discover new artists and songs
+    - Download music for offline listening (Premium users)
+    
+    Login to Audix: ${data.loginUrl || 'https://audix.com/login'}
+    
+    If you have any questions or need assistance, please contact our support team.
+    
+    Welcome back to Audix!
+    
+    © ${new Date().getFullYear()} Audix. All rights reserved.
+  `
+});
+
+// Add account deactivation template
+emailTemplates.accountDeactivated = (data) => ({
+  subject: 'Your Audix Account Has Been Deactivated',
+  html: `
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1.0">
+      <title>Account Deactivated</title>
+      <style>
+        body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+        .container { max-width: 600px; margin: 0 auto; padding: 20px; }
+        .header { background: linear-gradient(135deg, #dc3545, #e74c3c); color: white; padding: 30px; text-align: center; border-radius: 10px 10px 0 0; }
+        .content { background: #f9f9f9; padding: 30px; border-radius: 0 0 10px 10px; }
+        .button { display: inline-block; background: #007bff; color: white; padding: 12px 30px; text-decoration: none; border-radius: 5px; margin: 20px 0; }
+        .footer { text-align: center; margin-top: 30px; color: #666; font-size: 14px; }
+        .warning-box { background: #f8d7da; border: 1px solid #f5c6cb; color: #721c24; padding: 15px; border-radius: 5px; margin: 20px 0; }
+      </style>
+    </head>
+    <body>
+      <div class="container">
+        <div class="header">
+          <h1>🎵 Audix</h1>
+          <h2>Account Deactivated</h2>
+        </div>
+        <div class="content">
+          <div class="warning-box">
+            <strong>Important Notice:</strong> Your Audix account has been deactivated by our support team.
+          </div>
+          <p>Hello ${data.name},</p>
+          <p>We're writing to inform you that your Audix account has been deactivated. This means you will no longer be able to access your account or use our services.</p>
+          <p>What this means:</p>
+          <ul>
+            <li>🚫 You cannot log in to your account</li>
+            <li>🚫 You cannot stream music</li>
+            <li>🚫 You cannot access your playlists or saved music</li>
+            <li>🚫 All premium features are disabled</li>
+          </ul>
+          <p>If you believe this deactivation was made in error, or if you have questions about your account status, please contact our support team immediately.</p>
+          <div style="text-align: center;">
+            <a href="${data.supportUrl || 'https://audix.com/support'}" class="button">Contact Support</a>
+          </div>
+          <p>We're here to help resolve any issues and get you back to enjoying music on Audix.</p>
+        </div>
+        <div class="footer">
+          <p>© ${new Date().getFullYear()} Audix. All rights reserved.</p>
+          <p>This email was sent regarding your account status. Please do not reply to this email.</p>
+        </div>
+      </div>
+    </body>
+    </html>
+  `,
+  text: `
+    Account Deactivated - Audix
+    
+    Hello ${data.name},
+    
+    Important Notice: Your Audix account has been deactivated by our support team.
+    
+    This means you will no longer be able to access your account or use our services:
+    - You cannot log in to your account
+    - You cannot stream music
+    - You cannot access your playlists or saved music
+    - All premium features are disabled
+    
+    If you believe this deactivation was made in error, or if you have questions about your account status, please contact our support team immediately.
+    
+    Contact Support: ${data.supportUrl || 'https://audix.com/support'}
+    
+    We're here to help resolve any issues and get you back to enjoying music on Audix.
+    
+    © ${new Date().getFullYear()} Audix. All rights reserved.
+  `
+});
+
 // Add invoice paid template
 emailTemplates.invoicePaid = (data) => ({
   subject: `Your Audix invoice ${data.invoiceId ? `#${String(data.invoiceId).slice(-6)}` : ''}`.trim(),

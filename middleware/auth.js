@@ -78,11 +78,12 @@ const auth = async (req, res, next) => {
       }
 
       // Check if user account is active
-      if (!user.isActive) {
-        console.log('Auth Middleware: User account is inactive');
+      if (user.isAccountActive === false) {
+        console.log('Auth Middleware: User account is deactivated');
         return res.status(401).json({
           success: false,
-          message: 'Access denied. Account has been deactivated.'
+          message: 'Your account has been deactivated by an administrator. Please contact support for assistance.',
+          code: 'ACCOUNT_DEACTIVATED'
         });
       }
 

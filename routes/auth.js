@@ -489,13 +489,23 @@ router.post('/login', validateLogin, async (req, res) => {
 
     // Check if account is active
 
-    if (!user.isActive) {
+    if (user.isAccountActive === false) {
 
       return res.status(401).json({
 
         success: false,
 
-        message: 'Account has been deactivated. Please contact support.'
+        message: 'Your account has been deactivated by an administrator. Please contact our support team for assistance.',
+
+        code: 'ACCOUNT_DEACTIVATED',
+
+        adminContact: {
+
+          phone: '9061493022',
+
+          email: 'ashnajacob003@gmail.com'
+
+        }
 
       });
 
@@ -794,7 +804,18 @@ router.post('/google', async (req, res) => {
 
     }
 
-
+    // Check if account is deactivated (for existing users)
+    if (user.isAccountActive === false) {
+      return res.status(401).json({
+        success: false,
+        message: 'Your account has been deactivated by an administrator. Please contact our support team for assistance.',
+        code: 'ACCOUNT_DEACTIVATED',
+        adminContact: {
+          phone: '9061493022',
+          email: 'ashnajacob003@gmail.com'
+        }
+      });
+    }
 
     // Generate tokens
 
@@ -1314,16 +1335,29 @@ router.post('/refresh-token', async (req, res) => {
 
     const user = await User.findById(decoded.id);
 
-    if (!user || !user.isActive) {
+    if (!user) {
 
       return res.status(401).json({
 
         success: false,
 
-        message: 'User not found or inactive'
+        message: 'User not found'
 
       });
 
+    }
+
+    // Check if account is deactivated
+    if (user.isAccountActive === false) {
+      return res.status(401).json({
+        success: false,
+        message: 'Your account has been deactivated by an administrator. Please contact our support team for assistance.',
+        code: 'ACCOUNT_DEACTIVATED',
+        adminContact: {
+          phone: '9061493022',
+          email: 'ashnajacob003@gmail.com'
+        }
+      });
     }
 
 

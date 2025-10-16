@@ -138,6 +138,10 @@ const userSchema = new mongoose.Schema({
     type: Boolean,
     default: true
   },
+  isAccountActive: {
+    type: Boolean,
+    default: true
+  },
   accountType: {
     type: String,
     enum: ['free', 'premium', 'family', 'student'],
@@ -408,6 +412,7 @@ userSchema.index({ googleId: 1 });
 userSchema.index({ createdAt: -1 });
 userSchema.index({ lastActiveAt: -1 });
 userSchema.index({ isActive: 1 });
+userSchema.index({ isAccountActive: 1 });
 
 // Pre-save middleware to hash password
 userSchema.pre('save', async function(next) {

@@ -323,7 +323,15 @@ io.on('connection', (socket) => {
 
   socket.user.lastActiveAt = new Date();
 
-  socket.user.save().catch(err => console.error('Error updating user activity:', err));
+  // Add flag to prevent concurrent saves
+  if (!socket.user._isSaving) {
+    socket.user._isSaving = true;
+    socket.user.save()
+      .catch(err => console.error('Error updating user activity:', err))
+      .finally(() => {
+        socket.user._isSaving = false;
+      });
+  }
 
   
 
@@ -654,7 +662,15 @@ io.on('connection', (socket) => {
 
     socket.user.lastActiveAt = new Date();
 
-    socket.user.save();
+    // Add flag to prevent concurrent saves
+    if (!socket.user._isSaving) {
+      socket.user._isSaving = true;
+      socket.user.save()
+        .catch(err => console.error('Error updating user activity on disconnect:', err))
+        .finally(() => {
+          socket.user._isSaving = false;
+        });
+    }
 
     
 
