@@ -69,13 +69,29 @@ app.use((req, res, next) => {
 
 const corsOptions = {
 
-  origin: [
-    'http://localhost:5173', 
-    'http://localhost:3000', 
-    'http://localhost:5175', 
-    'http://localhost:3002',
-    'https://audixmusic.netlify.app'
-  ],
+  origin: function (origin, callback) {
+    // Allow requests with no origin (like mobile apps or curl requests)
+    if (!origin) return callback(null, true);
+    
+    const allowedOrigins = [
+      'http://localhost:5173', 
+      'http://localhost:3000', 
+      'http://localhost:5175', 
+      'http://localhost:3002',
+      'https://audixmusic.netlify.app',
+      'https://68f0cd17043708000807e5af--audixmusic.netlify.app'
+    ];
+    
+    // Allow all Netlify preview URLs (for development/preview deployments)
+    const isNetlifyPreview = origin && origin.includes('--audixmusic.netlify.app');
+    const isAllowedOrigin = allowedOrigins.includes(origin);
+    
+    if (isAllowedOrigin || isNetlifyPreview) {
+      callback(null, true);
+    } else {
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
 
   credentials: true,
 
@@ -129,7 +145,11 @@ app.use(helmet({
 
         "http://localhost:3001",
 
-        "http://localhost:3002"
+        "http://localhost:3002",
+
+        "https://audixmusic.netlify.app",
+
+        "https://*.audixmusic.netlify.app"
 
       ],
 
