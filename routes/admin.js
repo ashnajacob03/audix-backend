@@ -1,5 +1,7 @@
 const express = require('express');
 const { body, validationResult } = require('express-validator');
+const fs = require('fs');
+const path = require('path');
 const User = require('../models/User');
 const Artist = require('../models/Artist');
 const { auth } = require('../middleware/auth');
@@ -309,6 +311,43 @@ router.get('/users', [auth, adminAuth], async (req, res) => {
 });
 
 // ===== Artist Verification Admin =====
+// Serve verification files
+router.get('/artist-verifications/files/:filename', [auth, adminAuth], (req, res) => {
+  try {
+    const filename = req.params.filename;
+    const filePath = path.join(__dirname, '..', 'public', 'artist-verifications', filename);
+    
+    // Check if file exists
+    if (!fs.existsSync(filePath)) {
+      return res.status(404).json({ success: false, message: 'File not found' });
+    }
+    
+    // Set appropriate headers
+    const ext = path.extname(filename).toLowerCase();
+    if (ext === '.pdf') {
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Disposition', 'inline');
+    } else if (['.jpg', '.jpeg', '.png', '.gif', '.webp'].includes(ext)) {
+      res.setHeader('Content-Type', `image/${ext.substring(1)}`);
+    } else {
+      res.setHeader('Content-Type', 'application/octet-stream');
+      res.setHeader('Content-Disposition', 'attachment');
+    }
+    
+    // Stream the file
+    const fileStream = fs.createReadStream(filePath);
+    fileStream.pipe(res);
+    
+    fileStream.on('error', (error) => {
+      console.error('File stream error:', error);
+      res.status(500).json({ success: false, message: 'Error reading file' });
+    });
+  } catch (error) {
+    console.error('Serve verification file error:', error);
+    res.status(500).json({ success: false, message: 'Internal server error' });
+  }
+});
+
 // List pending verifications
 router.get('/artist-verifications', [auth, adminAuth], async (req, res) => {
   try {
