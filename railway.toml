@@ -1,0 +1,9 @@
+# Railway deployment configuration
+# This file tells Railway how to deploy your Node.js backend
+
+[build]
+  builder = "nixpacks"
+
+[deploy]
+  startCommand = "npm start"
+  healthcheckPath = "/health"

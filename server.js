@@ -79,7 +79,8 @@ const corsOptions = {
       'http://localhost:5175', 
       'http://localhost:3002',
       'https://audixmusic.netlify.app',
-      'https://68f0cd17043708000807e5af--audixmusic.netlify.app'
+      'https://68f0cd17043708000807e5af--audixmusic.netlify.app',
+      'https://*.audixmusic.netlify.app'
     ];
     
     // Allow all Netlify preview URLs (for development/preview deployments)
