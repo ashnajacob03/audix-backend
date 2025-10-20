@@ -85,11 +85,15 @@ const corsOptions = {
     
     // Allow all Netlify preview URLs (for development/preview deployments)
     const isNetlifyPreview = origin && origin.includes('--audixmusic.netlify.app');
+    const isNetlifyDomain = origin && origin.includes('audixmusic.netlify.app');
     const isAllowedOrigin = allowedOrigins.includes(origin);
     
-    if (isAllowedOrigin || isNetlifyPreview) {
+    console.log('CORS Check:', { origin, isNetlifyPreview, isNetlifyDomain, isAllowedOrigin });
+    
+    if (isAllowedOrigin || isNetlifyPreview || isNetlifyDomain) {
       callback(null, true);
     } else {
+      console.log('CORS Blocked:', origin);
       callback(new Error('Not allowed by CORS'));
     }
   },
