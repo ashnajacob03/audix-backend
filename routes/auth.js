@@ -1938,6 +1938,18 @@ const validationConfig = {
 
     ],
 
+    knownTypos: [
+
+      'gma.com', 'gnail.com', 'gamil.com', 'gmal.com', 'gmial.com', 'yaho.com', 'yhoo.com', 'hotmial.com', 'hotmal.com', 'outlok.com', 'outllok.com', 'icloud.co', 'icloud.om', 'gmai.com', 'gmail.con', 'gmail.co', 'gmail.cmo', 'yahho.com', 'yahool.com', 'yahooo.com', 'yaho.co', 'hotmail.co', 'hotmail.con', 'outlook.co', 'outlook.con', 'protonmail.co', 'protonmail.con', 'zoho.co', 'zoho.con'
+
+    ],
+
+    commonTlds: [
+
+      'com', 'in', 'net', 'org', 'edu', 'gov', 'co', 'io', 'me', 'us', 'uk', 'ca', 'au', 'info', 'biz', 'dev', 'app', 'xyz', 'pro', 'tech', 'ai', 'id', 'sg', 'za', 'fr', 'de', 'es', 'it', 'nl', 'ru', 'jp', 'kr', 'br', 'mx', 'ar', 'ch', 'se', 'no', 'fi', 'pl', 'tr', 'ir', 'pk', 'bd', 'lk', 'np', 'my', 'ph', 'vn', 'th', 'hk', 'tw', 'cn', 'sa', 'ae', 'qa', 'il', 'cz', 'sk', 'gr', 'pt', 'ro', 'hu', 'dk', 'be', 'at', 'ie', 'nz'
+
+    ],
+
   },
 
   password: {
