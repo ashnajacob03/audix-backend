@@ -79,21 +79,16 @@ const corsOptions = {
       'http://localhost:5175', 
       'http://localhost:3002',
       'https://audixmusic.netlify.app',
-      'https://68f0cd17043708000807e5af--audixmusic.netlify.app',
-      'https://*.audixmusic.netlify.app'
+      'https://68f0cd17043708000807e5af--audixmusic.netlify.app'
     ];
     
     // Allow all Netlify preview URLs (for development/preview deployments)
     const isNetlifyPreview = origin && origin.includes('--audixmusic.netlify.app');
-    const isNetlifyDomain = origin && origin.includes('audixmusic.netlify.app');
     const isAllowedOrigin = allowedOrigins.includes(origin);
     
-    console.log('CORS Check:', { origin, isNetlifyPreview, isNetlifyDomain, isAllowedOrigin });
-    
-    if (isAllowedOrigin || isNetlifyPreview || isNetlifyDomain) {
+    if (isAllowedOrigin || isNetlifyPreview) {
       callback(null, true);
     } else {
-      console.log('CORS Blocked:', origin);
       callback(new Error('Not allowed by CORS'));
     }
   },
